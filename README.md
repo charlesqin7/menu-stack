@@ -37,10 +37,11 @@ iOS 16/17 里「长按出现一排按钮」其实有三条互不相干的渲染�
 
 对 `_UIEditMenuListView`：
 
-1. hook `sizeThatFits:` / `intrinsicContentSize`，按条目数算出竖向尺寸（默认宽 236pt，行高 44pt）。
-2. hook `layoutSubviews`，找到内部 `UICollectionView`，把 `UICollectionViewFlowLayout.scrollDirection` 改成纵向，并隐藏翻页按钮。
-3. 若内部不是 flow layout，尝试 KVC 改 `scrollDirection`；再不行就替换成一条新的 flow layout（只替换一次）。
-4. hook `_UIEditMenuListViewCell` / `_UIEditMenuListCell` 的 `layoutSubviews`：把原来「图标在上、标题在下」的 stack 改成横向，图标左、文字右。
+1. hook `sizeThatFits:` / `intrinsicContentSize`，按条目数算出竖向尺寸（默认宽 280pt，行高 44pt）。
+2. hook `layoutSubviews` / `setFrame:` / `setBounds:`，把列表和 `_UIEditMenuContainerView` 撑到竖向尺寸（保持底部箭头位置），避免左边被容器裁掉。
+3. 关掉横向 paging，把 `contentOffset` 归零；隐藏 `_UIEditMenuPageButton` 以及 collection view 以外的翻页/箭头子视图。
+4. 若内部不是 flow layout，尝试 KVC 改 `scrollDirection`；再不行就替换成一条新的 flow layout（只替换一次）。
+5. hook collection cell 的 `layoutSubviews`：把原来「图标在上、标题在下」改成图标左、文字左对齐整行。
 
 私有类名随系统小版本可能变。打开设置里的「调试日志」后，用 `idevicesyslog | grep VerticalMenu` 看有没有 `sizeThatFits` 日志，就能确认 hook 是否打上。
 
@@ -90,12 +91,18 @@ make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
 
 把对应越狱环境的 deb 拷到手机，用 Sileo / Zebra / `dpkg -i` 安装，然后 respring。设置里的「纵向菜单」由 PreferenceLoader 直接打开，不依赖自定义 PreferenceBundle。
 
-每次 push 会跑 `.github/workflows/build.yml`，分别编译 **rootless** 和 **roothide** 两份 `.deb`，作为 Actions artifact 上传（`verticalmenu-rootless` / `verticalmenu-roothide`）。
+每次往 `main` 的 push 会跑 `.github/workflows/build.yml`：
+
+1. 分别编译 **rootless** 和 **roothide** 两份 `.deb`
+2. 作为 Actions artifact 上传（`verticalmenu-rootless` / `verticalmenu-roothide`，以及合并后的 `release`）
+3. 构建成功后发布到 GitHub Releases（标签 `v` + `control` 里的版本号，例如 [v1.0.2](https://github.com/charlesqin7/menu-stack/releases)），deb 挂在该 Release 下面
+
+RootHide / Dopamine 用户请装 **roothide** 那份，装完 respring，并把 Safari 从多任务划掉再开。
 
 ## 在设备上自测
 
 1. 备忘录或信息里长按一条内容：顶部那排并排小按钮应变成逐行列表。
-2. 任意输入框选中文字：原来的拷贝/粘贴横条应变成纵向菜单，可以上下滑。
+2. 任意输入框选中文字：原来的拷贝/粘贴横条应变成纵向菜单，标题完整可见，右侧不应再出现 `>` 翻页键。
 3. Safari 长按链接：若系统给了 palette / compact 行，应变纵向；本来就是竖列表的动作区保持竖列表。
 
 ## 没生效时怎么查

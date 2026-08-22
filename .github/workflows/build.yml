@@ -9,6 +9,9 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build VerticalMenu (${{ matrix.scheme }})
@@ -73,3 +76,57 @@ jobs:
           name: verticalmenu-${{ matrix.scheme }}
           path: dist/*.deb
           if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v5
+        with:
+          path: artifacts
+          pattern: verticalmenu-*
+          merge-multiple: false
+
+      - name: Collect release files
+        run: |
+          mkdir -p release
+          find artifacts -name '*.deb' -exec cp -v {} release/ \;
+          ls -lh release
+          test "$(find release -name '*.deb' | wc -l)" -ge 2
+
+      - name: Upload combined artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: release
+          path: release/*.deb
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION=$(awk '/^Version:/{print $2; exit}' control)
+          TAG="v${VERSION}"
+          NOTES=$(printf '%s\n' \
+            "纵向菜单 ${VERSION}" \
+            "" \
+            "安装对应越狱环境的 deb：" \
+            "- \`rootless-*.deb\`：Dopamine / palera1n 等 rootless" \
+            "- \`roothide-*.deb\`：RootHide / Bootstrap" \
+            "" \
+            "装完 respring，并把 Safari 等目标 App 从多任务划掉再开。")
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+          gh release create "$TAG" release/*.deb \
+            --title "纵向菜单 ${VERSION}" \
+            --notes "$NOTES" \
+            --target "${GITHUB_SHA}"
