@@ -131,7 +131,8 @@ static void VLMHidePagingControls(id host) {
     }
 }
 
-static void VLMApplyVerticalCollectionLayout(id host) {
+static void VLMApplyVerticalCollectionLayout(id hostObj) {
+    UIView *host = hostObj;
     if (objc_getAssociatedObject(host, kVLMApplyingKey)) {
         return;
     }

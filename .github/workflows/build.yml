@@ -17,7 +17,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scheme: [rootless, roothide]
+        include:
+          - scheme: rootless
+            theos_src: https://github.com/theos/theos
+          - scheme: roothide
+            theos_src: https://github.com/roothide/theos
 
     steps:
       - name: Checkout
@@ -27,7 +31,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/theos
-          key: theos-${{ runner.os }}-${{ hashFiles('.github/workflows/build.yml') }}
+          key: theos-${{ runner.os }}-${{ matrix.scheme }}-${{ hashFiles('.github/workflows/build.yml') }}
           restore-keys: |
             theos-${{ runner.os }}-
 
@@ -35,7 +39,7 @@ jobs:
         uses: Randomblock1/theos-action@v1.5
         with:
           theos-dir: ${{ github.workspace }}/theos
-          theos-src: https://github.com/theos/theos
+          theos-src: ${{ matrix.theos_src }}
           theos-sdks: https://github.com/theos/sdks
 
       - name: Put GNU make first
