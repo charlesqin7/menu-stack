@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>items</key>
+	<array>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>纵向菜单</string>
+			<key>footerText</key>
+			<string>把 iOS 16/17 的横向长按菜单改成纵向列表。改开关后请点「注销 SpringBoard」，并完全划掉正在用的 App 再打开。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.qins.verticalmenu</string>
+			<key>key</key>
+			<string>Enabled</string>
+			<key>label</key>
+			<string>启用插件</string>
+			<key>PostNotification</key>
+			<string>com.qins.verticalmenu/ReloadPrefs</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.qins.verticalmenu</string>
+			<key>key</key>
+			<string>ContextMenus</string>
+			<key>label</key>
+			<string>上下文菜单（compact / palette）</string>
+			<key>PostNotification</key>
+			<string>com.qins.verticalmenu/ReloadPrefs</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<true/>
+			<key>defaults</key>
+			<string>com.qins.verticalmenu</string>
+			<key>key</key>
+			<string>EditMenus</string>
+			<key>label</key>
+			<string>文本选择菜单（拷贝 / 粘贴条）</string>
+			<key>PostNotification</key>
+			<string>com.qins.verticalmenu/ReloadPrefs</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>调试</string>
+			<key>footerText</key>
+			<string>打开后会在系统日志打印 [VerticalMenu] 前缀。用 Console.app 或 idevicesyslog 过滤即可。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.qins.verticalmenu</string>
+			<key>key</key>
+			<string>Debug</string>
+			<key>label</key>
+			<string>调试日志</string>
+			<key>PostNotification</key>
+			<string>com.qins.verticalmenu/ReloadPrefs</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>注销 SpringBoard</string>
+			<key>action</key>
+			<string>respring</string>
+		</dict>
+	</array>
+	<key>title</key>
+	<string>纵向菜单</string>
+</dict>
+</plist>

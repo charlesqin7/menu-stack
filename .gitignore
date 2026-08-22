@@ -1,0 +1,7 @@
+.theos/
+packages/
+.DS_Store
+*.deb
+*.swp
+xcuserdata/
+agent-tools/
