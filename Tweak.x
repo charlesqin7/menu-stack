@@ -23,6 +23,8 @@ static const NSInteger kVLMElementSizeLarge = 2;
 
 static const CGFloat kVLMMenuWidth = 280.0;
 static const CGFloat kVLMRowHeight = 44.0;
+static const NSInteger kVLMVisibleRows = 5;
+static const CGFloat kVLMMenuPadding = 8.0;
 static const CGFloat kVLMScreenInset = 8.0;
 
 #pragma mark - Prefs
@@ -170,7 +172,7 @@ static void VLMHidePagingControls(id host) {
 }
 
 static void VLMUnclipAncestors(UIView *view) {
-    view.clipsToBounds = NO;
+    view.clipsToBounds = YES;
     UIView *current = view.superview;
     for (NSInteger depth = 0; current && depth < 6; depth++) {
         if ([current isKindOfClass:[UIWindow class]]) {
@@ -197,12 +199,32 @@ static BOOL VLMIsOnScreen(UIView *view) {
     return CGRectIntersectsRect(onScreen, window.bounds);
 }
 
+static void VLMOffsetEditMenuChrome(UIView *view, CGFloat dx, CGFloat dy) {
+    if (dx == 0 && dy == 0) {
+        return;
+    }
+    view.frame = CGRectOffset(view.frame, dx, dy);
+    UIView *current = view.superview;
+    for (NSInteger depth = 0; current && depth < 5; depth++) {
+        if ([current isKindOfClass:[UIWindow class]]) {
+            break;
+        }
+        NSString *name = NSStringFromClass(current.class);
+        if ([name containsString:@"EditMenu"] || [name containsString:@"Callout"] || [name containsString:@"Popover"]) {
+            current.frame = CGRectOffset(current.frame, dx, dy);
+        }
+        current = current.superview;
+    }
+}
+
 static void VLMKeepOnScreen(UIView *view) {
     UIWindow *window = view.window;
     if (!window) {
         return;
     }
     CGRect onScreen = [view convertRect:view.bounds toView:window];
+    CGFloat topInset = MAX(window.safeAreaInsets.top, 20.0) + 10.0;
+    CGFloat bottomInset = window.safeAreaInsets.bottom + kVLMScreenInset;
     CGFloat dx = 0;
     CGFloat dy = 0;
     if (onScreen.origin.x < kVLMScreenInset) {
@@ -212,16 +234,17 @@ static void VLMKeepOnScreen(UIView *view) {
     if (CGRectGetMaxX(onScreen) + dx > maxX) {
         dx = maxX - CGRectGetMaxX(onScreen);
     }
-    if (onScreen.origin.y < kVLMScreenInset) {
-        dy = kVLMScreenInset - onScreen.origin.y;
+    if (onScreen.origin.y < topInset) {
+        dy = topInset - onScreen.origin.y;
     }
-    if (dx == 0 && dy == 0) {
-        return;
+    CGFloat maxY = window.bounds.size.height - bottomInset;
+    if (CGRectGetMaxY(onScreen) + dy > maxY) {
+        dy = maxY - CGRectGetMaxY(onScreen);
+        if (onScreen.origin.y + dy < topInset) {
+            dy = topInset - onScreen.origin.y;
+        }
     }
-    CGRect frame = view.frame;
-    frame.origin.x += dx;
-    frame.origin.y += dy;
-    view.frame = frame;
+    VLMOffsetEditMenuChrome(view, dx, dy);
 }
 
 static CGSize VLMVerticalFittingSize(id host, CGSize orig) {
@@ -233,9 +256,8 @@ static CGSize VLMVerticalFittingSize(id host, CGSize orig) {
     }
 
     CGFloat width = kVLMMenuWidth;
-    CGFloat height = count * kVLMRowHeight + 8.0;
-    CGFloat maxHeight = MIN(UIScreen.mainScreen.bounds.size.height * 0.48, 440.0);
-    height = MIN(MAX(height, kVLMRowHeight + 8.0), maxHeight);
+    NSInteger visible = MIN(MAX(count, 1), kVLMVisibleRows);
+    CGFloat height = visible * kVLMRowHeight + kVLMMenuPadding;
     return CGSizeMake(width, height);
 }
 
@@ -332,17 +354,34 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
         frame.origin.y = bottomCenter.y - fitted.height;
         host.frame = frame;
         VLMKeepOnScreen(host);
+        UIView *container = host.superview;
+        if (container && ![container isKindOfClass:[UIWindow class]]) {
+            NSString *name = NSStringFromClass(container.class);
+            if ([name containsString:@"EditMenu"] || [name containsString:@"Callout"]) {
+                UIView *parent = container.superview;
+                if (parent) {
+                    CGRect frameInParent = [host convertRect:host.bounds toView:parent];
+                    container.bounds = CGRectMake(0, 0, frameInParent.size.width, frameInParent.size.height);
+                    container.frame = frameInParent;
+                    host.frame = container.bounds;
+                }
+            }
+        }
     }
 
     VLMUnclipAncestors(host);
 
     collectionView.pagingEnabled = NO;
+    collectionView.scrollEnabled = YES;
     collectionView.alwaysBounceHorizontal = NO;
-    collectionView.alwaysBounceVertical = YES;
+    collectionView.alwaysBounceVertical = (VLMItemCount(collectionView) > kVLMVisibleRows);
     collectionView.showsHorizontalScrollIndicator = NO;
+    collectionView.showsVerticalScrollIndicator = (VLMItemCount(collectionView) > kVLMVisibleRows);
     collectionView.clipsToBounds = YES;
     collectionView.frame = host.bounds;
-    [collectionView setContentOffset:CGPointZero animated:NO];
+    if (fabs(collectionView.contentOffset.x) > 0.5) {
+        [collectionView setContentOffset:CGPointMake(0, collectionView.contentOffset.y) animated:NO];
+    }
 
     VLMEnsureVerticalListLayout(collectionView);
     [collectionView.collectionViewLayout invalidateLayout];
@@ -422,8 +461,9 @@ static void VLMRelayoutCell(UIView *cell) {
     CGFloat icon = 22.0;
     CGFloat left = 14.0;
     CGFloat gap = 10.0;
+    CGFloat textX = left + icon + gap;
 
-    if (imageView) {
+    if (imageView && imageView.image) {
         VLMDisableConstraints(imageView);
         imageView.hidden = NO;
         imageView.alpha = 1;
@@ -432,7 +472,8 @@ static void VLMRelayoutCell(UIView *cell) {
             imageView.tintColor = UIColor.labelColor;
         }
         imageView.frame = CGRectMake(left, (height - icon) / 2.0, icon, icon);
-        left += icon + gap;
+    } else if (imageView) {
+        imageView.hidden = YES;
     }
 
     if (title) {
@@ -442,7 +483,7 @@ static void VLMRelayoutCell(UIView *cell) {
         title.textAlignment = NSTextAlignmentLeft;
         title.numberOfLines = 1;
         title.lineBreakMode = NSLineBreakByTruncatingTail;
-        title.frame = CGRectMake(left, 0, MAX(40.0, width - left - 14.0), height);
+        title.frame = CGRectMake(textX, 0, MAX(40.0, width - textX - 14.0), height);
     }
 }
 
