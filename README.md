@@ -77,25 +77,20 @@ layout/Library/PreferenceLoader/Preferences/
 ```bash
 export THEOS=~/theos
 git clone <本仓库>
-cd VerticalMenu   # 或本仓库根目录
+cd menu-stack   # 或本仓库根目录
 
-# palera1n / 现代 rootless（默认）
+# palera1n / Dopamine 等 rootless
 make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+
+# RootHide / Bootstrap
+make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
 ```
 
-生成的 deb 在 `packages/`。架构是 `iphoneos-arm64`。
+生成的 deb 在 `packages/`。rootless / roothide 架构都是 `iphoneos-arm64`。
 
-若你是 **rootful** 越狱：
+把对应越狱环境的 deb 拷到手机，用 Sileo / Zebra / `dpkg -i` 安装，然后 respring。
 
-```bash
-make clean package FINALPACKAGE=1
-```
-
-并把 `control` 里的 `Architecture` 改成 `iphoneos-arm`（Theos 在非 rootless 时一般会自己改）。
-
-把 deb 拷到手机，用 Sileo / Zebra / `dpkg -i` 安装，然后 respring。
-
-推到 GitHub 后，每次 `push` 会跑 `.github/workflows/build.yml`：在 macOS runner 上装 Theos，编译 rootless `.deb`，并作为 Actions artifact 上传。
+每次 push 会跑 `.github/workflows/build.yml`，分别编译 **rootless** 和 **roothide** 两份 `.deb`，作为 Actions artifact 上传（`verticalmenu-rootless` / `verticalmenu-roothide`）。
 
 ## 在设备上自测
 

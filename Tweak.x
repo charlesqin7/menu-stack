@@ -1,6 +1,9 @@
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 
+@interface _UIEditMenuListView : UIView
+@end
+
 #pragma mark - Constants
 
 static NSString * const kVLMPrefsID = @"com.qins.verticalmenu";
@@ -79,11 +82,11 @@ static BOOL VLMEditOn(void) {
 static const void *kVLMApplyingKey = &kVLMApplyingKey;
 static const void *kVLMReplacedLayoutKey = &kVLMReplacedLayoutKey;
 
-static UICollectionView *VLMFindCollectionView(UIView *view) {
+static UICollectionView *VLMFindCollectionView(id view) {
     if ([view isKindOfClass:[UICollectionView class]]) {
         return (UICollectionView *)view;
     }
-    for (UIView *sub in view.subviews) {
+    for (UIView *sub in [view subviews]) {
         UICollectionView *found = VLMFindCollectionView(sub);
         if (found) {
             return found;
@@ -92,7 +95,7 @@ static UICollectionView *VLMFindCollectionView(UIView *view) {
     return nil;
 }
 
-static UICollectionView *VLMCollectionViewInHost(UIView *host) {
+static UICollectionView *VLMCollectionViewInHost(id host) {
     static NSArray<NSString *> *keys;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -117,8 +120,8 @@ static NSInteger VLMItemCount(UICollectionView *collectionView) {
     return [collectionView numberOfItemsInSection:0];
 }
 
-static void VLMHidePagingControls(UIView *host) {
-    for (UIView *sub in host.subviews) {
+static void VLMHidePagingControls(id host) {
+    for (UIView *sub in [host subviews]) {
         NSString *name = NSStringFromClass(sub.class);
         if ([name containsString:@"PageButton"] || [name containsString:@"PageControl"]) {
             sub.hidden = YES;
@@ -128,7 +131,7 @@ static void VLMHidePagingControls(UIView *host) {
     }
 }
 
-static void VLMApplyVerticalCollectionLayout(UIView *host) {
+static void VLMApplyVerticalCollectionLayout(id host) {
     if (objc_getAssociatedObject(host, kVLMApplyingKey)) {
         return;
     }
@@ -255,14 +258,14 @@ static void VLMRelayoutCell(UIView *cell) {
     }
 }
 
-static void VLMRelayoutVisibleCells(UIView *host) {
+static void VLMRelayoutVisibleCells(id host) {
     UICollectionView *collectionView = VLMCollectionViewInHost(host);
     for (UIView *cell in collectionView.visibleCells) {
         VLMRelayoutCell(cell);
     }
 }
 
-static CGSize VLMVerticalFittingSize(UIView *host, CGSize orig) {
+static CGSize VLMVerticalFittingSize(id host, CGSize orig) {
     UICollectionView *collectionView = VLMCollectionViewInHost(host);
     NSInteger count = VLMItemCount(collectionView);
     if (count <= 0) {
@@ -277,7 +280,7 @@ static CGSize VLMVerticalFittingSize(UIView *host, CGSize orig) {
     return CGSizeMake(width, height);
 }
 
-static BOOL VLMIsInsideEditMenu(UIView *view) {
+static BOOL VLMIsInsideEditMenu(id view) {
     static Class listClass;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{

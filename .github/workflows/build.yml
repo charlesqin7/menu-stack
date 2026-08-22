@@ -11,16 +11,20 @@ concurrency:
 
 jobs:
   build:
-    name: Build VerticalMenu (rootless)
+    name: Build VerticalMenu (${{ matrix.scheme }})
     runs-on: macos-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        scheme: [rootless, roothide]
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Cache Theos
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/theos
           key: theos-${{ runner.os }}-${{ hashFiles('.github/workflows/build.yml') }}
@@ -37,17 +41,24 @@ jobs:
       - name: Put GNU make first
         run: echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
 
-      - name: Build package
-        run: make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+      - name: Build ${{ matrix.scheme }} package
+        run: make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=${{ matrix.scheme }}
         env:
           THEOS: ${{ github.workspace }}/theos
 
       - name: Show packages
-        run: ls -lh packages
+        run: |
+          ls -lh packages
+          mkdir -p dist
+          for deb in packages/*.deb; do
+            base="$(basename "$deb")"
+            cp "$deb" "dist/${{ matrix.scheme }}-$base"
+          done
+          ls -lh dist
 
       - name: Upload .deb
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
-          name: verticalmenu-rootless
-          path: packages/*.deb
+          name: verticalmenu-${{ matrix.scheme }}
+          path: dist/*.deb
           if-no-files-found: error
