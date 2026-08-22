@@ -38,10 +38,9 @@ iOS 16/17 里「长按出现一排按钮」其实有三条互不相干的渲染�
 对 `_UIEditMenuListView`：
 
 1. hook `sizeThatFits:` / `intrinsicContentSize`，按条目数算出竖向尺寸（默认宽 280pt，行高 44pt）。
-2. hook `layoutSubviews` / `setFrame:` / `setBounds:`，把列表和 `_UIEditMenuContainerView` 撑到竖向尺寸（保持底部箭头位置），避免左边被容器裁掉。
-3. 关掉横向 paging，把 `contentOffset` 归零；隐藏 `_UIEditMenuPageButton` 以及 collection view 以外的翻页/箭头子视图。
-4. 若内部不是 flow layout，尝试 KVC 改 `scrollDirection`；再不行就替换成一条新的 flow layout（只替换一次）。
-5. hook collection cell 的 `layoutSubviews`：把原来「图标在上、标题在下」改成图标左、文字左对齐整行。
+2. 菜单上屏后再改内部 `UICollectionView`：系统用的是横向/分页 layout（把容器拉高只会变成「很高的几列」），所以换成自己的 `VLMVerticalListLayout`，每行 44pt 全宽。
+3. 拦截 `setCollectionViewLayout:`，避免 UIKit 下一拍又把横向 layout 设回去。
+4. 关掉 paging，隐藏 `_UIEditMenuPageButton`；cell 里图标左、文字左对齐。
 
 私有类名随系统小版本可能变。打开设置里的「调试日志」后，用 `idevicesyslog | grep VerticalMenu` 看有没有 `sizeThatFits` 日志，就能确认 hook 是否打上。
 
