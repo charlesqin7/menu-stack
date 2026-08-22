@@ -41,7 +41,8 @@ iOS 16/17 里「长按出现一排按钮」其实有三条互不相干的渲染�
 2. 用当前选区矩形把菜单贴到文字下一行，并把顶部箭头移到选区中点；选区靠右时菜单贴右边、箭头仍对准选中的字。
 3. 菜单上屏后再改内部 `UICollectionView`：系统用的是横向/分页 layout（把容器拉高只会变成「很高的几列」），所以换成自己的 `VLMVerticalListLayout`，每行 44pt 全宽。
 4. 拦截 `setCollectionViewLayout:`，避免 UIKit 下一拍又把横向 layout 设回去。
-5. 关掉 paging，隐藏 `_UIEditMenuPageButton`；无图标的条目也给图标留位，文字对齐。
+5. 关掉 paging，隐藏 `_UIEditMenuPageButton`；没有系统图标的条目显示默认 `ellipsis.circle` 图标，保证文字左对齐。
+6. 去掉菜单容器上的系统投影；列表上下各留 16pt，避免圆角把最后一行裁成半截。
 
 私有类名随系统小版本可能变。打开设置里的「调试日志」后，用 `idevicesyslog | grep VerticalMenu` 看有没有 `sizeThatFits` 日志，就能确认 hook 是否打上。
 
@@ -121,6 +122,12 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 2. 打开调试日志，完全杀掉 App 再开，看是否出现 `[VerticalMenu] loaded in <bundle id>`。没有日志就是没注入（ElleKit 过滤、未 respring、装到了错误的 scheme）。
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
+
+## 更新（1.0.8）
+
+- 去掉文本选择菜单外圈阴影。
+- 一次显示的 5 行都能完整露出，最后一项不再被圆角裁切。
+- 没有图标的菜单项会补一个默认图标。
 
 ## 合法与风险
 

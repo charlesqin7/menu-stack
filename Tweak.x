@@ -24,7 +24,7 @@ static const NSInteger kVLMElementSizeLarge = 2;
 static const CGFloat kVLMMenuWidth = 280.0;
 static const CGFloat kVLMRowHeight = 44.0;
 static const NSInteger kVLMVisibleRows = 5;
-static const CGFloat kVLMMenuPadding = 8.0;
+static const CGFloat kVLMListInset = 16.0;
 static const CGFloat kVLMScreenInset = 8.0;
 static const CGFloat kVLMSelectionGap = 6.0;
 
@@ -96,6 +96,9 @@ static const void *kVLMApplyingKey = &kVLMApplyingKey;
 static const void *kVLMLayoutGuardKey = &kVLMLayoutGuardKey;
 static const void *kVLMLoggedLayoutKey = &kVLMLoggedLayoutKey;
 static const void *kVLMGrowDownKey = &kVLMGrowDownKey;
+static const void *kVLMFallbackIconKey = &kVLMFallbackIconKey;
+
+static BOOL VLMNameLooksLikeArrow(UIView *view);
 
 static UICollectionView *VLMFindCollectionView(id view) {
     if ([view isKindOfClass:[UICollectionView class]]) {
@@ -182,6 +185,58 @@ static void VLMUnclipAncestors(UIView *view) {
         }
         current.clipsToBounds = NO;
         current = current.superview;
+    }
+}
+
+static void VLMClearLayerShadow(CALayer *layer) {
+    if (!layer) {
+        return;
+    }
+    layer.shadowOpacity = 0;
+    layer.shadowRadius = 0;
+    layer.shadowPath = nil;
+    layer.shadowOffset = CGSizeZero;
+}
+
+static void VLMStripShadowsInView(UIView *view, UIView *host, NSInteger depth) {
+    if (!view || depth < 0) {
+        return;
+    }
+    NSString *name = NSStringFromClass(view.class);
+    if (view != host && [name localizedCaseInsensitiveContainsString:@"shadow"]) {
+        view.hidden = YES;
+        view.alpha = 0;
+    }
+    VLMClearLayerShadow(view.layer);
+    for (UIView *sub in view.subviews) {
+        VLMStripShadowsInView(sub, host, depth - 1);
+    }
+}
+
+static void VLMStripShadows(UIView *view) {
+    UIView *current = view;
+    for (NSInteger depth = 0; current && depth < 6; depth++) {
+        if ([current isKindOfClass:[UIWindow class]]) {
+            break;
+        }
+        VLMStripShadowsInView(current, view, 3);
+        current = current.superview;
+    }
+}
+
+static void VLMSizeBackgroundsToHost(UIView *host) {
+    for (UIView *sub in host.subviews) {
+        if ([sub isKindOfClass:[UICollectionView class]] || VLMNameLooksLikeArrow(sub)) {
+            continue;
+        }
+        NSString *name = NSStringFromClass(sub.class);
+        if ([sub isKindOfClass:[UIVisualEffectView class]]
+            || [name containsString:@"Background"]
+            || [name containsString:@"Platter"]
+            || [name containsString:@"Material"]
+            || [name containsString:@"VisualEffect"]) {
+            sub.frame = host.bounds;
+        }
     }
 }
 
@@ -480,7 +535,7 @@ static CGSize VLMVerticalFittingSize(id host, CGSize orig) {
 
     CGFloat width = kVLMMenuWidth;
     NSInteger visible = MIN(MAX(count, 1), kVLMVisibleRows);
-    CGFloat height = visible * kVLMRowHeight + kVLMMenuPadding;
+    CGFloat height = visible * kVLMRowHeight + kVLMListInset * 2.0;
     return CGSizeMake(width, height);
 }
 
@@ -506,7 +561,7 @@ static CGSize VLMVerticalFittingSize(id host, CGSize orig) {
 }
 
 - (CGSize)collectionViewContentSize {
-    return CGSizeMake([self vlm_rowWidth], [self vlm_itemCount] * kVLMRowHeight);
+    return CGSizeMake([self vlm_rowWidth], kVLMListInset * 2.0 + [self vlm_itemCount] * kVLMRowHeight);
 }
 
 - (NSArray<UICollectionViewLayoutAttributes *> *)layoutAttributesForElementsInRect:(CGRect)rect {
@@ -525,7 +580,7 @@ static CGSize VLMVerticalFittingSize(id host, CGSize orig) {
 - (UICollectionViewLayoutAttributes *)layoutAttributesForItemAtIndexPath:(NSIndexPath *)indexPath {
     UICollectionViewLayoutAttributes *attributes = [UICollectionViewLayoutAttributes layoutAttributesForCellWithIndexPath:indexPath];
     CGFloat width = [self vlm_rowWidth];
-    attributes.frame = CGRectMake(0, indexPath.item * kVLMRowHeight, width, kVLMRowHeight);
+    attributes.frame = CGRectMake(0, kVLMListInset + indexPath.item * kVLMRowHeight, width, kVLMRowHeight);
     return attributes;
 }
 
@@ -586,6 +641,8 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     }
 
     VLMUnclipAncestors(host);
+    VLMStripShadows(host);
+    VLMSizeBackgroundsToHost(host);
 
     collectionView.pagingEnabled = NO;
     collectionView.scrollEnabled = YES;
@@ -594,6 +651,14 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     collectionView.showsHorizontalScrollIndicator = NO;
     collectionView.showsVerticalScrollIndicator = (VLMItemCount(collectionView) > kVLMVisibleRows);
     collectionView.clipsToBounds = YES;
+    if (@available(iOS 11.0, *)) {
+        collectionView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    }
+    if (@available(iOS 13.0, *)) {
+        collectionView.automaticallyAdjustsScrollIndicatorInsets = NO;
+    }
+    collectionView.contentInset = UIEdgeInsetsZero;
+    collectionView.scrollIndicatorInsets = UIEdgeInsetsZero;
     collectionView.frame = host.bounds;
     if (fabs(collectionView.contentOffset.x) > 0.5) {
         [collectionView setContentOffset:CGPointMake(0, collectionView.contentOffset.y) animated:NO];
@@ -626,6 +691,36 @@ static void VLMEnumerateLabelsAndImages(UIView *view, NSMutableArray<UILabel *> 
     }
 }
 
+static UIImage *VLMFallbackMenuIcon(void) {
+    static UIImage *icon;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        if (@available(iOS 13.0, *)) {
+            UIImage *system = [UIImage systemImageNamed:@"ellipsis.circle"];
+            if (!system) {
+                system = [UIImage systemImageNamed:@"circle"];
+            }
+            icon = [system imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
+        }
+    });
+    return icon;
+}
+
+static UIImageView *VLMEnsureFallbackIconView(UIView *content, UIColor *tint) {
+    UIImageView *iv = objc_getAssociatedObject(content, kVLMFallbackIconKey);
+    if (!iv) {
+        iv = [[UIImageView alloc] init];
+        iv.contentMode = UIViewContentModeScaleAspectFit;
+        objc_setAssociatedObject(content, kVLMFallbackIconKey, iv, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [content addSubview:iv];
+    }
+    iv.image = VLMFallbackMenuIcon();
+    iv.hidden = NO;
+    iv.alpha = 1;
+    iv.tintColor = tint ?: UIColor.labelColor;
+    return iv;
+}
+
 static void VLMRelayoutCell(UIView *cell) {
     CGFloat width = cell.bounds.size.width;
     CGFloat height = cell.bounds.size.height;
@@ -652,15 +747,24 @@ static void VLMRelayoutCell(UIView *cell) {
         }
     }
 
+    UIImageView *fallback = objc_getAssociatedObject(content, kVLMFallbackIconKey);
     UIImageView *imageView = nil;
     for (UIImageView *candidate in images) {
+        if (candidate == fallback) {
+            continue;
+        }
         if (candidate.image) {
             imageView = candidate;
             break;
         }
     }
     if (!imageView) {
-        imageView = images.firstObject;
+        for (UIImageView *candidate in images) {
+            if (candidate != fallback) {
+                imageView = candidate;
+                break;
+            }
+        }
     }
 
     for (UIView *sub in content.subviews) {
@@ -678,18 +782,32 @@ static void VLMRelayoutCell(UIView *cell) {
     CGFloat left = 14.0;
     CGFloat gap = 10.0;
     CGFloat textX = left + icon + gap;
+    UIColor *tint = title.textColor ?: UIColor.labelColor;
+    UIImageView *iconView = nil;
 
     if (imageView && imageView.image) {
+        if (fallback) {
+            fallback.hidden = YES;
+        }
+        iconView = imageView;
         VLMDisableConstraints(imageView);
         imageView.hidden = NO;
         imageView.alpha = 1;
         imageView.contentMode = UIViewContentModeScaleAspectFit;
         if (imageView.image.renderingMode != UIImageRenderingModeAlwaysOriginal) {
-            imageView.tintColor = UIColor.labelColor;
+            imageView.tintColor = tint;
         }
-        imageView.frame = CGRectMake(left, (height - icon) / 2.0, icon, icon);
-    } else if (imageView) {
-        imageView.hidden = YES;
+    } else {
+        if (imageView) {
+            imageView.hidden = YES;
+        }
+        iconView = VLMEnsureFallbackIconView(content, tint);
+        VLMDisableConstraints(iconView);
+    }
+
+    if (iconView) {
+        iconView.frame = CGRectMake(left, (height - icon) / 2.0, icon, icon);
+        iconView.contentMode = UIViewContentModeScaleAspectFit;
     }
 
     if (title) {
@@ -918,6 +1036,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
         return;
     }
     self.clipsToBounds = NO;
+    VLMStripShadows(self);
 }
 
 %end
