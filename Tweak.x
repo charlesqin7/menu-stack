@@ -91,6 +91,7 @@ static BOOL VLMEditOn(void) {
 
 static const void *kVLMApplyingKey = &kVLMApplyingKey;
 static const void *kVLMLayoutGuardKey = &kVLMLayoutGuardKey;
+static const void *kVLMLoggedLayoutKey = &kVLMLoggedLayoutKey;
 
 static UICollectionView *VLMFindCollectionView(id view) {
     if ([view isKindOfClass:[UICollectionView class]]) {
@@ -238,6 +239,68 @@ static CGSize VLMVerticalFittingSize(id host, CGSize orig) {
     return CGSizeMake(width, height);
 }
 
+@interface VLMVerticalListLayout : UICollectionViewLayout
+@end
+
+@implementation VLMVerticalListLayout
+
+- (NSInteger)vlm_itemCount {
+    UICollectionView *collectionView = self.collectionView;
+    if (!collectionView || collectionView.numberOfSections <= 0) {
+        return 0;
+    }
+    return [collectionView numberOfItemsInSection:0];
+}
+
+- (CGFloat)vlm_rowWidth {
+    CGFloat width = self.collectionView.bounds.size.width;
+    if (width < 8.0) {
+        width = kVLMMenuWidth;
+    }
+    return width;
+}
+
+- (CGSize)collectionViewContentSize {
+    return CGSizeMake([self vlm_rowWidth], [self vlm_itemCount] * kVLMRowHeight);
+}
+
+- (NSArray<UICollectionViewLayoutAttributes *> *)layoutAttributesForElementsInRect:(CGRect)rect {
+    NSMutableArray<UICollectionViewLayoutAttributes *> *attributes = [NSMutableArray array];
+    NSInteger count = [self vlm_itemCount];
+    for (NSInteger index = 0; index < count; index++) {
+        NSIndexPath *path = [NSIndexPath indexPathForItem:index inSection:0];
+        UICollectionViewLayoutAttributes *item = [self layoutAttributesForItemAtIndexPath:path];
+        if (item && CGRectIntersectsRect(item.frame, rect)) {
+            [attributes addObject:item];
+        }
+    }
+    return attributes;
+}
+
+- (UICollectionViewLayoutAttributes *)layoutAttributesForItemAtIndexPath:(NSIndexPath *)indexPath {
+    UICollectionViewLayoutAttributes *attributes = [UICollectionViewLayoutAttributes layoutAttributesForCellWithIndexPath:indexPath];
+    CGFloat width = [self vlm_rowWidth];
+    attributes.frame = CGRectMake(0, indexPath.item * kVLMRowHeight, width, kVLMRowHeight);
+    return attributes;
+}
+
+- (BOOL)shouldInvalidateLayoutForBoundsChange:(CGRect)newBounds {
+    return YES;
+}
+
+@end
+
+static UICollectionViewLayout *VLMEnsureVerticalListLayout(UICollectionView *collectionView) {
+    UICollectionViewLayout *current = collectionView.collectionViewLayout;
+    if ([current isKindOfClass:[VLMVerticalListLayout class]]) {
+        [current invalidateLayout];
+        return current;
+    }
+    VLMVerticalListLayout *replacement = [[VLMVerticalListLayout alloc] init];
+    [collectionView setCollectionViewLayout:replacement animated:NO];
+    return replacement;
+}
+
 static void VLMApplyVerticalCollectionLayout(id hostObj) {
     UIView *host = hostObj;
     if (objc_getAssociatedObject(host, kVLMApplyingKey)) {
@@ -251,13 +314,18 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
         return;
     }
 
-    CGSize fitted = VLMVerticalFittingSize(host, host.bounds.size);
+    if (!objc_getAssociatedObject(host, kVLMLoggedLayoutKey)) {
+        NSLog(@"[VerticalMenu] edit layout %@ items=%ld bounds=%@",
+              NSStringFromClass(collectionView.collectionViewLayout.class),
+              (long)VLMItemCount(collectionView),
+              NSStringFromCGRect(host.bounds));
+        objc_setAssociatedObject(host, kVLMLoggedLayoutKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
 
+    CGSize fitted = VLMVerticalFittingSize(host, host.bounds.size);
     if (VLMIsOnScreen(host)) {
         CGPoint bottomCenter = CGPointMake(CGRectGetMidX(host.frame), CGRectGetMaxY(host.frame));
-        CGRect bounds = host.bounds;
-        bounds.size = fitted;
-        host.bounds = bounds;
+        host.bounds = CGRectMake(0, 0, fitted.width, fitted.height);
         CGRect frame = host.frame;
         frame.size = fitted;
         frame.origin.x = bottomCenter.x - fitted.width / 2.0;
@@ -268,24 +336,6 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
 
     VLMUnclipAncestors(host);
 
-    UICollectionViewLayout *layout = collectionView.collectionViewLayout;
-    if ([layout isKindOfClass:[UICollectionViewFlowLayout class]]) {
-        UICollectionViewFlowLayout *flow = (UICollectionViewFlowLayout *)layout;
-        CGFloat rowWidth = MAX(host.bounds.size.width, 80.0);
-        CGSize itemSize = CGSizeMake(MAX(rowWidth - 16.0, 80.0), kVLMRowHeight);
-        flow.scrollDirection = UICollectionViewScrollDirectionVertical;
-        flow.itemSize = itemSize;
-        flow.minimumLineSpacing = 0;
-        flow.minimumInteritemSpacing = 0;
-        flow.sectionInset = UIEdgeInsetsMake(4, 8, 4, 8);
-        [flow invalidateLayout];
-    } else if (layout) {
-        @try {
-            [layout setValue:@(UICollectionViewScrollDirectionVertical) forKey:@"scrollDirection"];
-        } @catch (__unused NSException *exception) {
-        }
-    }
-
     collectionView.pagingEnabled = NO;
     collectionView.alwaysBounceHorizontal = NO;
     collectionView.alwaysBounceVertical = YES;
@@ -293,6 +343,10 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     collectionView.clipsToBounds = YES;
     collectionView.frame = host.bounds;
     [collectionView setContentOffset:CGPointZero animated:NO];
+
+    VLMEnsureVerticalListLayout(collectionView);
+    [collectionView.collectionViewLayout invalidateLayout];
+    [collectionView layoutIfNeeded];
 
     VLMHidePagingControls(host);
     objc_setAssociatedObject(host, kVLMApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -320,7 +374,7 @@ static void VLMEnumerateLabelsAndImages(UIView *view, NSMutableArray<UILabel *> 
 static void VLMRelayoutCell(UIView *cell) {
     CGFloat width = cell.bounds.size.width;
     CGFloat height = cell.bounds.size.height;
-    if (width < 100.0 || height < 8.0) {
+    if (width < 80.0 || height < 8.0) {
         return;
     }
 
@@ -560,6 +614,28 @@ static BOOL VLMIsInsideEditMenu(id view) {
 
 %end
 
+%group EditMenuCollectionView
+
+%hook UICollectionView
+
+- (void)setCollectionViewLayout:(UICollectionViewLayout *)layout animated:(BOOL)animated {
+    if (VLMEditOn() && VLMIsInsideEditMenu(self) && ![layout isKindOfClass:[VLMVerticalListLayout class]]) {
+        layout = [[VLMVerticalListLayout alloc] init];
+    }
+    %orig;
+}
+
+- (void)setCollectionViewLayout:(UICollectionViewLayout *)layout animated:(BOOL)animated completion:(void (^)(BOOL))completion {
+    if (VLMEditOn() && VLMIsInsideEditMenu(self) && ![layout isKindOfClass:[VLMVerticalListLayout class]]) {
+        layout = [[VLMVerticalListLayout alloc] init];
+    }
+    %orig;
+}
+
+%end
+
+%end
+
 %group EditMenuPageButton
 
 %hook _UIEditMenuPageButton
@@ -615,6 +691,7 @@ static void VLMPrefsChanged(CFNotificationCenterRef center, void *observer, CFSt
     if (objc_getClass("_UIEditMenuListView")) {
         %init(EditMenuList);
         %init(EditMenuCells);
+        %init(EditMenuCollectionView);
         hookedList = YES;
     }
     if (objc_getClass("_UIEditMenuPageButton")) {
