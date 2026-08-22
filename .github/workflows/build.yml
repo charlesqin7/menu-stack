@@ -33,7 +33,7 @@ jobs:
           path: ${{ github.workspace }}/theos
           key: theos-${{ runner.os }}-${{ matrix.scheme }}-${{ hashFiles('.github/workflows/build.yml') }}
           restore-keys: |
-            theos-${{ runner.os }}-
+            theos-${{ runner.os }}-${{ matrix.scheme }}-
 
       - name: Install Theos
         uses: Randomblock1/theos-action@v1.5
