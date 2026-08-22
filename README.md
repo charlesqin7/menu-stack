@@ -88,7 +88,7 @@ make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
 
 生成的 deb 在 `packages/`。rootless / roothide 架构都是 `iphoneos-arm64`。
 
-把对应越狱环境的 deb 拷到手机，用 Sileo / Zebra / `dpkg -i` 安装，然后 respring。
+把对应越狱环境的 deb 拷到手机，用 Sileo / Zebra / `dpkg -i` 安装，然后 respring。设置里的「纵向菜单」由 PreferenceLoader 直接打开，不依赖自定义 PreferenceBundle。
 
 每次 push 会跑 `.github/workflows/build.yml`，分别编译 **rootless** 和 **roothide** 两份 `.deb`，作为 Actions artifact 上传（`verticalmenu-rootless` / `verticalmenu-roothide`）。
 

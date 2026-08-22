@@ -15,7 +15,7 @@ static const NSUInteger kVLMPaletteOption = (1 << 7);
 // UIMenuElementSizeLarge (iOS 16+) = 2
 static const NSInteger kVLMElementSizeLarge = 2;
 
-static const CGFloat kVLMMenuWidth = 236.0;
+static const CGFloat kVLMMenuWidth = 280.0;
 static const CGFloat kVLMRowHeight = 44.0;
 
 #pragma mark - Prefs
@@ -30,8 +30,21 @@ static BOOL gDebug = NO;
 } while (0)
 
 static NSDictionary *VLMPrefsDictionary(void) {
+    CFStringRef ident = (__bridge CFStringRef)kVLMPrefsID;
+    CFPreferencesAppSynchronize(ident);
+    CFArrayRef keys = CFPreferencesCopyKeyList(ident, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    if (keys) {
+        CFDictionaryRef cfDict = CFPreferencesCopyMultiple(keys, ident, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+        CFRelease(keys);
+        NSDictionary *dict = CFBridgingRelease(cfDict);
+        if (dict.count > 0) {
+            return dict;
+        }
+    }
+
     NSArray<NSString *> *paths = @[
         @"/var/jb/var/mobile/Library/Preferences/com.qins.verticalmenu.plist",
+        @"/var/jb/Library/Preferences/com.qins.verticalmenu.plist",
         @"/var/mobile/Library/Preferences/com.qins.verticalmenu.plist",
     ];
     for (NSString *path in paths) {
@@ -40,16 +53,7 @@ static NSDictionary *VLMPrefsDictionary(void) {
             return dict;
         }
     }
-
-    CFStringRef ident = (__bridge CFStringRef)kVLMPrefsID;
-    CFPreferencesAppSynchronize(ident);
-    CFArrayRef keys = CFPreferencesCopyKeyList(ident, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    if (!keys) {
-        return @{};
-    }
-    CFDictionaryRef cfDict = CFPreferencesCopyMultiple(keys, ident, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    CFRelease(keys);
-    return CFBridgingRelease(cfDict) ?: @{};
+    return @{};
 }
 
 static BOOL VLMBool(NSDictionary *dict, NSString *key, BOOL fallback) {
@@ -196,66 +200,107 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     collectionView.showsHorizontalScrollIndicator = NO;
     collectionView.showsVerticalScrollIndicator = (VLMItemCount(collectionView) > 8);
     collectionView.clipsToBounds = YES;
+    collectionView.frame = host.bounds;
+    if (fabs(collectionView.contentOffset.x) > 0.5) {
+        [collectionView setContentOffset:CGPointMake(0, collectionView.contentOffset.y) animated:NO];
+    }
+    collectionView.contentInset = UIEdgeInsetsZero;
 
     VLMHidePagingControls(host);
     objc_setAssociatedObject(host, kVLMApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-static void VLMEnumerateLabelsAndImages(UIView *view, UILabel **outLabel, UIImageView **outImage) {
+static void VLMDisableConstraints(UIView *view) {
+    view.translatesAutoresizingMaskIntoConstraints = YES;
+    NSArray<NSLayoutConstraint *> *constraints = [view.constraints copy];
+    for (NSLayoutConstraint *constraint in constraints) {
+        constraint.active = NO;
+    }
+}
+
+static void VLMEnumerateLabelsAndImages(UIView *view, NSMutableArray<UILabel *> *labels, NSMutableArray<UIImageView *> *images) {
+    if ([view isKindOfClass:[UILabel class]]) {
+        [labels addObject:(UILabel *)view];
+    } else if ([view isKindOfClass:[UIImageView class]]) {
+        [images addObject:(UIImageView *)view];
+    }
     for (UIView *sub in view.subviews) {
-        if ([sub isKindOfClass:[UILabel class]] && !(*outLabel)) {
-            UILabel *label = (UILabel *)sub;
-            if (label.text.length > 0 || label.attributedText.length > 0) {
-                *outLabel = label;
-            }
-        } else if ([sub isKindOfClass:[UIImageView class]] && !(*outImage)) {
-            UIImageView *imageView = (UIImageView *)sub;
-            if (imageView.image) {
-                *outImage = imageView;
-            }
-        }
-        if (*outLabel && *outImage) {
-            return;
-        }
-        VLMEnumerateLabelsAndImages(sub, outLabel, outImage);
-        if (*outLabel && *outImage) {
-            return;
-        }
+        VLMEnumerateLabelsAndImages(sub, labels, images);
     }
 }
 
 static void VLMRelayoutCell(UIView *cell) {
     CGFloat width = cell.bounds.size.width;
     CGFloat height = cell.bounds.size.height;
-    if (width < 120.0 || height < 8.0) {
+    if (width < 80.0 || height < 8.0) {
         return;
     }
 
-    for (UIView *sub in cell.subviews) {
+    UIView *content = cell;
+    if ([cell isKindOfClass:[UICollectionViewCell class]]) {
+        content = ((UICollectionViewCell *)cell).contentView;
+        content.frame = cell.bounds;
+        content.clipsToBounds = NO;
+    }
+    cell.clipsToBounds = NO;
+
+    NSMutableArray<UILabel *> *labels = [NSMutableArray array];
+    NSMutableArray<UIImageView *> *images = [NSMutableArray array];
+    VLMEnumerateLabelsAndImages(content, labels, images);
+
+    UILabel *title = nil;
+    for (UILabel *label in labels) {
+        if (!title || label.text.length > title.text.length) {
+            title = label;
+        }
+    }
+
+    UIImageView *imageView = nil;
+    for (UIImageView *candidate in images) {
+        if (candidate.image) {
+            imageView = candidate;
+            break;
+        }
+    }
+    if (!imageView) {
+        imageView = images.firstObject;
+    }
+
+    for (UIView *sub in content.subviews) {
         if ([sub isKindOfClass:[UIStackView class]]) {
             UIStackView *stack = (UIStackView *)sub;
             stack.axis = UILayoutConstraintAxisHorizontal;
             stack.alignment = UIStackViewAlignmentCenter;
+            stack.distribution = UIStackViewDistributionFill;
             stack.spacing = 10;
-            stack.layoutMargins = UIEdgeInsetsMake(0, 12, 0, 12);
-            stack.layoutMarginsRelativeArrangement = YES;
+            stack.frame = UIEdgeInsetsInsetRect(content.bounds, UIEdgeInsetsMake(0, 12, 0, 12));
         }
     }
 
-    UILabel *title = nil;
-    UIImageView *imageView = nil;
-    VLMEnumerateLabelsAndImages(cell, &title, &imageView);
+    CGFloat icon = 22.0;
+    CGFloat left = 14.0;
+    CGFloat gap = 10.0;
+
+    if (imageView) {
+        VLMDisableConstraints(imageView);
+        imageView.hidden = NO;
+        imageView.alpha = 1;
+        imageView.contentMode = UIViewContentModeScaleAspectFit;
+        if (imageView.image.renderingMode != UIImageRenderingModeAlwaysOriginal) {
+            imageView.tintColor = UIColor.labelColor;
+        }
+        imageView.frame = CGRectMake(left, (height - icon) / 2.0, icon, icon);
+        left += icon + gap;
+    }
 
     if (title) {
+        VLMDisableConstraints(title);
+        title.hidden = NO;
+        title.alpha = 1;
         title.textAlignment = NSTextAlignmentLeft;
         title.numberOfLines = 1;
         title.lineBreakMode = NSLineBreakByTruncatingTail;
-    }
-
-    if (title && imageView && imageView.translatesAutoresizingMaskIntoConstraints) {
-        CGFloat icon = 22.0;
-        imageView.frame = CGRectMake(14.0, (height - icon) / 2.0, icon, icon);
-        title.frame = CGRectMake(44.0, 0, width - 58.0, height);
+        title.frame = CGRectMake(left, 0, MAX(40.0, width - left - 14.0), height);
     }
 }
 
@@ -404,6 +449,18 @@ static BOOL VLMIsInsideEditMenu(id view) {
     }
     VLMApplyVerticalCollectionLayout(self);
     VLMRelayoutVisibleCells(self);
+
+    static const void *kVLMNudgedKey = &kVLMNudgedKey;
+    UIWindow *window = self.window;
+    if (window && !objc_getAssociatedObject(self, kVLMNudgedKey)) {
+        CGRect onScreen = [self convertRect:self.bounds toView:window];
+        if (onScreen.origin.x < 8.0) {
+            CGRect frame = self.frame;
+            frame.origin.x += (8.0 - onScreen.origin.x);
+            self.frame = frame;
+            objc_setAssociatedObject(self, kVLMNudgedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+    }
 }
 
 - (void)setBounds:(CGRect)bounds {
