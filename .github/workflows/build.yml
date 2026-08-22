@@ -46,7 +46,14 @@ jobs:
         run: echo "$(brew --prefix make)/libexec/gnubin" >> "$GITHUB_PATH"
 
       - name: Build ${{ matrix.scheme }} package
-        run: make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=${{ matrix.scheme }}
+        run: |
+          SDK=$(ls -d "$THEOS"/sdks/iPhoneOS*.sdk | sort -V | tail -1)
+          SDKVER=$(basename "$SDK" | sed -E 's/iPhoneOS([0-9.]+)\.sdk/\1/')
+          echo "Using Theos SDK $SDK ($SDKVER)"
+          make clean package \
+            FINALPACKAGE=1 \
+            THEOS_PACKAGE_SCHEME=${{ matrix.scheme }} \
+            TARGET="iphone:clang:${SDKVER}:16.0"
         env:
           THEOS: ${{ github.workspace }}/theos
 
