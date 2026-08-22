@@ -306,8 +306,8 @@ static CGRect VLMSelectionRectInWindow(UIWindow *window) {
     }
 
     UIView *responder = VLMFirstResponderInView(window);
-    if (![responder conformsToProtocol:@protocol(UITextInput)]) {
-        for (UIWindow *other in UIApplication.sharedApplication.windows) {
+    if (![responder conformsToProtocol:@protocol(UITextInput)] && window.windowScene) {
+        for (UIWindow *other in window.windowScene.windows) {
             responder = VLMFirstResponderInView(other);
             if ([responder conformsToProtocol:@protocol(UITextInput)]) {
                 window = other;
