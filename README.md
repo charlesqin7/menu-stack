@@ -38,7 +38,7 @@ iOS 16/17 里「长按出现一排按钮」其实有三条互不相干的渲染�
 对 `_UIEditMenuListView`：
 
 1. hook `sizeThatFits:` / `intrinsicContentSize`，宽 280pt、行高 44pt；窗口高度最多 5 行，多出来的条目在 collection view 里上下滑。
-2. 箭头在菜单上方（选区靠顶、菜单在下方）时固定顶边往下长，并保持原来的 x，避免菜单掉到屏幕中部、箭头对不着选区；箭头在下方时仍固定底边往上长。只移动最外层容器一次，防止列表和容器各移一遍。
+2. 用当前选区矩形把菜单贴到文字下一行，并把顶部箭头移到选区中点；选区靠右时菜单贴右边、箭头仍对准选中的字。
 3. 菜单上屏后再改内部 `UICollectionView`：系统用的是横向/分页 layout（把容器拉高只会变成「很高的几列」），所以换成自己的 `VLMVerticalListLayout`，每行 44pt 全宽。
 4. 拦截 `setCollectionViewLayout:`，避免 UIKit 下一拍又把横向 layout 设回去。
 5. 关掉 paging，隐藏 `_UIEditMenuPageButton`；无图标的条目也给图标留位，文字对齐。

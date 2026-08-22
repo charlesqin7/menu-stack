@@ -26,6 +26,7 @@ static const CGFloat kVLMRowHeight = 44.0;
 static const NSInteger kVLMVisibleRows = 5;
 static const CGFloat kVLMMenuPadding = 8.0;
 static const CGFloat kVLMScreenInset = 8.0;
+static const CGFloat kVLMSelectionGap = 6.0;
 
 #pragma mark - Prefs
 
@@ -270,6 +271,171 @@ static BOOL VLMShouldGrowDownward(UIView *host) {
     return growDown;
 }
 
+static UIView *VLMFirstResponderInView(UIView *view) {
+    if (view.isFirstResponder) {
+        return view;
+    }
+    for (UIView *sub in view.subviews) {
+        UIView *found = VLMFirstResponderInView(sub);
+        if (found) {
+            return found;
+        }
+    }
+    return nil;
+}
+
+static CGRect VLMConvertTextRectToWindow(id<UITextInput> input, CGRect rect, UIWindow *window) {
+    if (CGRectIsNull(rect) || (rect.size.width <= 0.5 && rect.size.height <= 0.5)) {
+        return CGRectNull;
+    }
+    UIView *view = nil;
+    if ([input isKindOfClass:[UIView class]]) {
+        view = (UIView *)input;
+    } else if ([input respondsToSelector:@selector(textInputView)]) {
+        view = input.textInputView;
+    }
+    if (!view.window) {
+        return CGRectNull;
+    }
+    return [view convertRect:rect toView:window];
+}
+
+static CGRect VLMSelectionRectInWindow(UIWindow *window) {
+    if (!window) {
+        return CGRectNull;
+    }
+
+    UIView *responder = VLMFirstResponderInView(window);
+    if (![responder conformsToProtocol:@protocol(UITextInput)]) {
+        for (UIWindow *other in UIApplication.sharedApplication.windows) {
+            responder = VLMFirstResponderInView(other);
+            if ([responder conformsToProtocol:@protocol(UITextInput)]) {
+                window = other;
+                break;
+            }
+        }
+    }
+    if (![responder conformsToProtocol:@protocol(UITextInput)]) {
+        return CGRectNull;
+    }
+
+    id<UITextInput> input = (id<UITextInput>)responder;
+    UITextRange *range = input.selectedTextRange;
+    if (!range || range.isEmpty) {
+        return CGRectNull;
+    }
+
+    CGRect unionRect = CGRectNull;
+    NSArray<UITextSelectionRect *> *rects = [input selectionRectsForRange:range];
+    for (UITextSelectionRect *item in rects) {
+        CGRect converted = VLMConvertTextRectToWindow(input, item.rect, window);
+        if (!CGRectIsNull(converted) && converted.size.height > 0.5) {
+            unionRect = CGRectIsNull(unionRect) ? converted : CGRectUnion(unionRect, converted);
+        }
+    }
+    if (CGRectIsNull(unionRect) || CGRectIsEmpty(unionRect)) {
+        unionRect = VLMConvertTextRectToWindow(input, [input firstRectForRange:range], window);
+    }
+    if ((CGRectIsNull(unionRect) || CGRectIsEmpty(unionRect)) && range.end) {
+        unionRect = VLMConvertTextRectToWindow(input, [input caretRectForPosition:range.end], window);
+    }
+    if ((CGRectIsNull(unionRect) || CGRectIsEmpty(unionRect)) && [responder isKindOfClass:[UIView class]]) {
+        for (id<UIInteraction> interaction in ((UIView *)responder).interactions) {
+            if (![NSStringFromClass(interaction.class) containsString:@"EditMenu"]) {
+                continue;
+            }
+            if ([interaction respondsToSelector:@selector(locationInView:)]) {
+                CGPoint point = [(UIEditMenuInteraction *)interaction locationInView:window];
+                if (!CGPointEqualToPoint(point, CGPointZero)) {
+                    unionRect = CGRectMake(point.x - 8.0, point.y - 11.0, 16.0, 22.0);
+                }
+            }
+        }
+    }
+    return unionRect;
+}
+
+static void VLMSetFrameInWindow(UIView *view, CGRect windowFrame) {
+    if (!view.superview || !view.window) {
+        return;
+    }
+    view.bounds = CGRectMake(0, 0, windowFrame.size.width, windowFrame.size.height);
+    view.frame = [view.superview convertRect:windowFrame fromView:view.window];
+}
+
+static void VLMPointArrowAtSelection(UIView *host, CGRect selection, BOOL below) {
+    UIView *arrow = VLMFindArrowNear(host);
+    if (!arrow || !arrow.superview || !host.window) {
+        return;
+    }
+
+    CGRect listInSuper = [arrow.superview convertRect:host.bounds fromView:host];
+    CGFloat targetX = CGRectGetMidX([arrow.superview convertRect:selection fromView:host.window]);
+    CGRect arrowFrame = arrow.frame;
+    CGFloat minX = CGRectGetMinX(listInSuper) + 18.0;
+    CGFloat maxX = CGRectGetMaxX(listInSuper) - 18.0 - arrowFrame.size.width;
+    if (maxX < minX) {
+        minX = CGRectGetMidX(listInSuper) - arrowFrame.size.width / 2.0;
+        maxX = minX;
+    }
+    arrowFrame.origin.x = MIN(MAX(targetX - arrowFrame.size.width / 2.0, minX), maxX);
+    if (below) {
+        arrowFrame.origin.y = CGRectGetMinY(listInSuper) - arrowFrame.size.height + 2.0;
+    } else {
+        arrowFrame.origin.y = CGRectGetMaxY(listInSuper) - 2.0;
+    }
+    arrow.hidden = NO;
+    arrow.alpha = 1;
+    arrow.frame = arrowFrame;
+}
+
+static BOOL VLMPositionHostNearSelection(UIView *host, CGSize fitted) {
+    UIWindow *window = host.window;
+    CGRect selection = VLMSelectionRectInWindow(window);
+    if (!window || CGRectIsNull(selection) || selection.size.height < 1.0) {
+        return NO;
+    }
+
+    CGFloat topInset = MAX(window.safeAreaInsets.top, 20.0) + 6.0;
+    CGFloat bottomInset = window.safeAreaInsets.bottom + kVLMScreenInset;
+    CGFloat leftInset = kVLMScreenInset;
+    CGFloat rightInset = window.bounds.size.width - kVLMScreenInset;
+
+    UIView *arrow = VLMFindArrowNear(host);
+    CGFloat arrowH = arrow ? MAX(CGRectGetHeight(arrow.bounds), 8.0) : 8.0;
+    BOOL below = VLMShouldGrowDownward(host);
+    if (selection.origin.y < topInset + 72.0) {
+        below = YES;
+    }
+
+    CGRect listRect;
+    listRect.size = fitted;
+    listRect.origin.x = CGRectGetMidX(selection) - fitted.width / 2.0;
+    if (listRect.origin.x < leftInset) {
+        listRect.origin.x = leftInset;
+    }
+    if (CGRectGetMaxX(listRect) > rightInset) {
+        listRect.origin.x = rightInset - fitted.width;
+    }
+
+    if (below) {
+        listRect.origin.y = CGRectGetMaxY(selection) + kVLMSelectionGap + arrowH * 0.35;
+        if (CGRectGetMaxY(listRect) > window.bounds.size.height - bottomInset) {
+            listRect.origin.y = window.bounds.size.height - bottomInset - fitted.height;
+        }
+    } else {
+        listRect.origin.y = selection.origin.y - kVLMSelectionGap - arrowH * 0.35 - fitted.height;
+        if (listRect.origin.y < topInset) {
+            listRect.origin.y = topInset;
+        }
+    }
+
+    VLMSetFrameInWindow(host, listRect);
+    VLMPointArrowAtSelection(host, selection, below);
+    VLMLog(@"pin selection=%@ list=%@ below=%d", NSStringFromCGRect(selection), NSStringFromCGRect(listRect), below);
+    return YES;
+}
+
 static void VLMKeepOnScreen(UIView *view) {
     UIView *chrome = VLMOutermostEditMenuView(view);
     UIWindow *window = chrome.window;
@@ -403,18 +569,20 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
 
     CGSize fitted = VLMVerticalFittingSize(host, host.bounds.size);
     if (VLMIsOnScreen(host)) {
-        BOOL growDown = VLMShouldGrowDownward(host);
-        CGRect frame = host.frame;
-        CGFloat minX = CGRectGetMinX(frame);
-        CGFloat minY = CGRectGetMinY(frame);
-        CGFloat maxY = CGRectGetMaxY(frame);
-        host.bounds = CGRectMake(0, 0, fitted.width, fitted.height);
-        frame.size = fitted;
-        frame.origin.x = minX;
-        frame.origin.y = growDown ? minY : (maxY - fitted.height);
-        host.frame = frame;
-        VLMKeepOnScreen(host);
-        VLMLog(@"anchor growDown=%d frame=%@", growDown, NSStringFromCGRect(host.frame));
+        if (!VLMPositionHostNearSelection(host, fitted)) {
+            BOOL growDown = VLMShouldGrowDownward(host);
+            CGRect frame = host.frame;
+            CGFloat minX = CGRectGetMinX(frame);
+            CGFloat minY = CGRectGetMinY(frame);
+            CGFloat maxY = CGRectGetMaxY(frame);
+            host.bounds = CGRectMake(0, 0, fitted.width, fitted.height);
+            frame.size = fitted;
+            frame.origin.x = minX;
+            frame.origin.y = growDown ? minY : (maxY - fitted.height);
+            host.frame = frame;
+            VLMKeepOnScreen(host);
+            VLMLog(@"anchor growDown=%d frame=%@", growDown, NSStringFromCGRect(host.frame));
+        }
     }
 
     VLMUnclipAncestors(host);
