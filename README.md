@@ -95,6 +95,8 @@ make clean package FINALPACKAGE=1
 
 把 deb 拷到手机，用 Sileo / Zebra / `dpkg -i` 安装，然后 respring。
 
+推到 GitHub 后，每次 `push` 会跑 `.github/workflows/build.yml`：在 macOS runner 上装 Theos，编译 rootless `.deb`，并作为 Actions artifact 上传。
+
 ## 在设备上自测
 
 1. 备忘录或信息里长按一条内容：顶部那排并排小按钮应变成逐行列表。
