@@ -94,6 +94,7 @@ static BOOL VLMEditOn(void) {
 static const void *kVLMApplyingKey = &kVLMApplyingKey;
 static const void *kVLMLayoutGuardKey = &kVLMLayoutGuardKey;
 static const void *kVLMLoggedLayoutKey = &kVLMLoggedLayoutKey;
+static const void *kVLMGrowDownKey = &kVLMGrowDownKey;
 
 static UICollectionView *VLMFindCollectionView(id view) {
     if ([view isKindOfClass:[UICollectionView class]]) {
@@ -199,31 +200,84 @@ static BOOL VLMIsOnScreen(UIView *view) {
     return CGRectIntersectsRect(onScreen, window.bounds);
 }
 
-static void VLMOffsetEditMenuChrome(UIView *view, CGFloat dx, CGFloat dy) {
-    if (dx == 0 && dy == 0) {
-        return;
+static BOOL VLMNameLooksLikeArrow(UIView *view) {
+    NSString *name = NSStringFromClass(view.class);
+    if ([name containsString:@"Page"]) {
+        return NO;
     }
-    view.frame = CGRectOffset(view.frame, dx, dy);
+    return [name containsString:@"Arrow"] || [name containsString:@"Pointer"] || [name containsString:@"Callout"];
+}
+
+static UIView *VLMFindArrowNear(UIView *host) {
+    UIView *root = host;
+    for (NSInteger depth = 0; depth < 3 && root.superview; depth++) {
+        if ([root.superview isKindOfClass:[UIWindow class]]) {
+            break;
+        }
+        root = root.superview;
+    }
+
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
+    for (NSUInteger index = 0; index < queue.count && index < 48; index++) {
+        UIView *view = queue[index];
+        if (view != host && VLMNameLooksLikeArrow(view) && view.bounds.size.width < 80.0 && view.bounds.size.height < 40.0) {
+            return view;
+        }
+        [queue addObjectsFromArray:view.subviews];
+    }
+    return nil;
+}
+
+static UIView *VLMOutermostEditMenuView(UIView *view) {
+    UIView *result = view;
     UIView *current = view.superview;
-    for (NSInteger depth = 0; current && depth < 5; depth++) {
+    for (NSInteger depth = 0; current && depth < 6; depth++) {
         if ([current isKindOfClass:[UIWindow class]]) {
             break;
         }
         NSString *name = NSStringFromClass(current.class);
         if ([name containsString:@"EditMenu"] || [name containsString:@"Callout"] || [name containsString:@"Popover"]) {
-            current.frame = CGRectOffset(current.frame, dx, dy);
+            result = current;
         }
         current = current.superview;
     }
+    return result;
+}
+
+static BOOL VLMShouldGrowDownward(UIView *host) {
+    NSNumber *cached = objc_getAssociatedObject(host, kVLMGrowDownKey);
+    if (cached) {
+        return cached.boolValue;
+    }
+
+    BOOL growDown = NO;
+    UIView *arrow = VLMFindArrowNear(host);
+    UIView *ref = host.superview ?: host;
+    if (arrow) {
+        CGRect arrowRect = [arrow convertRect:arrow.bounds toView:ref];
+        growDown = CGRectGetMidY(arrowRect) <= CGRectGetMidY(ref.bounds) + 4.0;
+        VLMLog(@"arrow %@ midY=%.1f refMid=%.1f growDown=%d", NSStringFromClass(arrow.class), CGRectGetMidY(arrowRect), CGRectGetMidY(ref.bounds), growDown);
+    } else {
+        UIWindow *window = host.window;
+        if (window) {
+            CGRect onScreen = [host convertRect:host.bounds toView:window];
+            CGFloat topBand = MAX(window.safeAreaInsets.top, 20.0) + 96.0;
+            growDown = onScreen.origin.y < topBand;
+        }
+    }
+
+    objc_setAssociatedObject(host, kVLMGrowDownKey, @(growDown), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return growDown;
 }
 
 static void VLMKeepOnScreen(UIView *view) {
-    UIWindow *window = view.window;
+    UIView *chrome = VLMOutermostEditMenuView(view);
+    UIWindow *window = chrome.window;
     if (!window) {
         return;
     }
-    CGRect onScreen = [view convertRect:view.bounds toView:window];
-    CGFloat topInset = MAX(window.safeAreaInsets.top, 20.0) + 10.0;
+    CGRect onScreen = [chrome convertRect:chrome.bounds toView:window];
+    CGFloat topInset = MAX(window.safeAreaInsets.top, 20.0) + 6.0;
     CGFloat bottomInset = window.safeAreaInsets.bottom + kVLMScreenInset;
     CGFloat dx = 0;
     CGFloat dy = 0;
@@ -244,7 +298,10 @@ static void VLMKeepOnScreen(UIView *view) {
             dy = topInset - onScreen.origin.y;
         }
     }
-    VLMOffsetEditMenuChrome(view, dx, dy);
+    if (dx == 0 && dy == 0) {
+        return;
+    }
+    chrome.frame = CGRectOffset(chrome.frame, dx, dy);
 }
 
 static CGSize VLMVerticalFittingSize(id host, CGSize orig) {
@@ -346,27 +403,18 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
 
     CGSize fitted = VLMVerticalFittingSize(host, host.bounds.size);
     if (VLMIsOnScreen(host)) {
-        CGPoint bottomCenter = CGPointMake(CGRectGetMidX(host.frame), CGRectGetMaxY(host.frame));
-        host.bounds = CGRectMake(0, 0, fitted.width, fitted.height);
+        BOOL growDown = VLMShouldGrowDownward(host);
         CGRect frame = host.frame;
+        CGFloat minX = CGRectGetMinX(frame);
+        CGFloat minY = CGRectGetMinY(frame);
+        CGFloat maxY = CGRectGetMaxY(frame);
+        host.bounds = CGRectMake(0, 0, fitted.width, fitted.height);
         frame.size = fitted;
-        frame.origin.x = bottomCenter.x - fitted.width / 2.0;
-        frame.origin.y = bottomCenter.y - fitted.height;
+        frame.origin.x = minX;
+        frame.origin.y = growDown ? minY : (maxY - fitted.height);
         host.frame = frame;
         VLMKeepOnScreen(host);
-        UIView *container = host.superview;
-        if (container && ![container isKindOfClass:[UIWindow class]]) {
-            NSString *name = NSStringFromClass(container.class);
-            if ([name containsString:@"EditMenu"] || [name containsString:@"Callout"]) {
-                UIView *parent = container.superview;
-                if (parent) {
-                    CGRect frameInParent = [host convertRect:host.bounds toView:parent];
-                    container.bounds = CGRectMake(0, 0, frameInParent.size.width, frameInParent.size.height);
-                    container.frame = frameInParent;
-                    host.frame = container.bounds;
-                }
-            }
-        }
+        VLMLog(@"anchor growDown=%d frame=%@", growDown, NSStringFromCGRect(host.frame));
     }
 
     VLMUnclipAncestors(host);
