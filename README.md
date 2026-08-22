@@ -95,9 +95,17 @@ make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
 
 1. 分别编译 **rootless** 和 **roothide** 两份 `.deb`
 2. 作为 Actions artifact 上传（`verticalmenu-rootless` / `verticalmenu-roothide`，以及合并后的 `release`）
-3. 构建成功后发布到 GitHub Releases（标签 `v` + `control` 里的版本号，例如 [v1.0.2](https://github.com/charlesqin7/menu-stack/releases)），deb 挂在该 Release 下面
+3. 构建成功后发布到 GitHub Releases（标签 `v` + `control` 里的版本号，例如 [Releases](https://github.com/charlesqin7/menu-stack/releases)），deb 挂在该 Release 下面
 
-RootHide / Dopamine 用户请装 **roothide** 那份，装完 respring，并把 Safari 从多任务划掉再开。
+RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把 Safari 从多任务划掉再开。
+
+插件注入时**总会**打一条 `NSLog`，不依赖「调试日志」开关：
+
+```
+[VerticalMenu] loaded in com.apple.mobilesafari enabled=1 context=1 edit=1 debug=0 list=1
+```
+
+用 `idevicesyslog | grep VerticalMenu`（或设备上的系统日志）就能确认有没有进 Safari。打开「调试日志」后才会有 `sizeThatFits` 等细节。若复制菜单完全不出现，先在设置里关掉「文本选择菜单」，划掉 App 再试：横条应恢复，用来确认是不是这一层 hook 的问题。
 
 ## 在设备上自测
 

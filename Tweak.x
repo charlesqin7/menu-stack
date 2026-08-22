@@ -77,7 +77,6 @@ static void VLMLoadPrefs(void) {
     gContextMenus = VLMBool(dict, @"ContextMenus", YES);
     gEditMenus = VLMBool(dict, @"EditMenus", YES);
     gDebug = VLMBool(dict, @"Debug", NO);
-    VLMLog(@"prefs enabled=%d context=%d edit=%d", gEnabled, gContextMenus, gEditMenus);
 }
 
 static BOOL VLMContextOn(void) {
@@ -91,11 +90,7 @@ static BOOL VLMEditOn(void) {
 #pragma mark - View helpers
 
 static const void *kVLMApplyingKey = &kVLMApplyingKey;
-static const void *kVLMReplacedLayoutKey = &kVLMReplacedLayoutKey;
 static const void *kVLMLayoutGuardKey = &kVLMLayoutGuardKey;
-static const void *kVLMFrameGuardKey = &kVLMFrameGuardKey;
-
-static CGSize VLMVerticalFittingSize(id host, CGSize orig);
 
 static UICollectionView *VLMFindCollectionView(id view) {
     if ([view isKindOfClass:[UICollectionView class]]) {
@@ -135,10 +130,6 @@ static NSInteger VLMItemCount(UICollectionView *collectionView) {
     return [collectionView numberOfItemsInSection:0];
 }
 
-static BOOL VLMNameContains(id object, NSString *token) {
-    return [NSStringFromClass([object class]) containsString:token];
-}
-
 static void VLMHideView(UIView *view) {
     if (!view) {
         return;
@@ -148,39 +139,12 @@ static void VLMHideView(UIView *view) {
     view.userInteractionEnabled = NO;
 }
 
-static BOOL VLMIsBackgroundChrome(UIView *view) {
-    if ([view isKindOfClass:[UIVisualEffectView class]]) {
-        return YES;
-    }
-    NSString *name = NSStringFromClass(view.class);
-    return [name containsString:@"VisualEffect"]
-        || [name containsString:@"Background"]
-        || [name containsString:@"Material"]
-        || [name containsString:@"Platter"]
-        || [name containsString:@"Shadow"];
-}
-
-static BOOL VLMIsCalloutArrow(UIView *view) {
-    NSString *name = NSStringFromClass(view.class);
-    if ([name containsString:@"Page"]) {
-        return NO;
-    }
-    return [name containsString:@"Arrow"]
-        || [name containsString:@"Pointer"]
-        || [name containsString:@"Callout"];
-}
-
 static void VLMHidePagingControls(id host) {
     UIView *hostView = host;
     for (UIView *sub in hostView.subviews) {
-        if ([sub isKindOfClass:[UICollectionView class]] || VLMIsBackgroundChrome(sub) || VLMIsCalloutArrow(sub)) {
-            continue;
-        }
-        VLMHideView(sub);
-        for (UIView *inner in sub.subviews) {
-            if ([inner isKindOfClass:[UIButton class]] || VLMNameContains(inner, @"Page")) {
-                VLMHideView(inner);
-            }
+        NSString *name = NSStringFromClass(sub.class);
+        if ([name containsString:@"PageButton"] || [name containsString:@"PageControl"]) {
+            VLMHideView(sub);
         }
     }
 
@@ -190,8 +154,7 @@ static void VLMHidePagingControls(id host) {
         buttonKeys = @[
             @"_leftPageButton", @"_rightPageButton",
             @"leftPageButton", @"rightPageButton",
-            @"_pageButton", @"pageButton",
-            @"_nextPageButton", @"_previousPageButton"
+            @"_pageButton", @"pageButton"
         ];
     });
     for (NSString *key in buttonKeys) {
@@ -205,15 +168,32 @@ static void VLMHidePagingControls(id host) {
     }
 }
 
-static UICollectionViewFlowLayout *VLMMakeVerticalFlow(CGFloat width) {
-    UICollectionViewFlowLayout *flow = [[UICollectionViewFlowLayout alloc] init];
-    flow.scrollDirection = UICollectionViewScrollDirectionVertical;
-    flow.minimumLineSpacing = 0;
-    flow.minimumInteritemSpacing = 0;
-    flow.sectionInset = UIEdgeInsetsMake(4, 8, 4, 8);
-    flow.itemSize = CGSizeMake(MAX(width - 16.0, 120.0), kVLMRowHeight);
-    flow.estimatedItemSize = CGSizeZero;
-    return flow;
+static void VLMUnclipAncestors(UIView *view) {
+    view.clipsToBounds = NO;
+    UIView *current = view.superview;
+    for (NSInteger depth = 0; current && depth < 6; depth++) {
+        if ([current isKindOfClass:[UIWindow class]]) {
+            break;
+        }
+        current.clipsToBounds = NO;
+        current = current.superview;
+    }
+}
+
+static BOOL VLMIsOnScreen(UIView *view) {
+    UIWindow *window = view.window;
+    if (!window) {
+        return NO;
+    }
+    CGRect frame = view.frame;
+    if (frame.size.width < 8.0 || frame.size.height < 8.0) {
+        return NO;
+    }
+    CGRect onScreen = [view convertRect:view.bounds toView:window];
+    if (CGRectIsEmpty(onScreen) || CGRectIsNull(onScreen)) {
+        return NO;
+    }
+    return CGRectIntersectsRect(onScreen, window.bounds);
 }
 
 static void VLMKeepOnScreen(UIView *view) {
@@ -243,47 +223,22 @@ static void VLMKeepOnScreen(UIView *view) {
     view.frame = frame;
 }
 
-static void VLMResizeViewKeepingBottomCenter(UIView *view, CGSize size) {
-    if (size.width < 8.0 || size.height < 8.0) {
-        return;
+static CGSize VLMVerticalFittingSize(id host, CGSize orig) {
+    UICollectionView *collectionView = VLMCollectionViewInHost(host);
+    NSInteger count = VLMItemCount(collectionView);
+    if (count <= 0) {
+        CGFloat estimated = orig.width > 1.0 ? round(orig.width / 72.0) : 4.0;
+        count = MAX(1, (NSInteger)estimated);
     }
-    if (fabs(view.bounds.size.width - size.width) < 0.5 && fabs(view.bounds.size.height - size.height) < 0.5) {
-        return;
-    }
-    CGPoint bottomCenter = CGPointMake(CGRectGetMidX(view.frame), CGRectGetMaxY(view.frame));
-    view.bounds = CGRectMake(0, 0, size.width, size.height);
-    CGRect frame = view.frame;
-    frame.size = size;
-    frame.origin.x = bottomCenter.x - size.width / 2.0;
-    frame.origin.y = bottomCenter.y - size.height;
-    view.frame = frame;
+
+    CGFloat width = kVLMMenuWidth;
+    CGFloat height = count * kVLMRowHeight + 8.0;
+    CGFloat maxHeight = MIN(UIScreen.mainScreen.bounds.size.height * 0.48, 440.0);
+    height = MIN(MAX(height, kVLMRowHeight + 8.0), maxHeight);
+    return CGSizeMake(width, height);
 }
 
-static void VLMExpandEditMenuAncestors(UIView *list, CGSize size) {
-    list.clipsToBounds = YES;
-    VLMResizeViewKeepingBottomCenter(list, size);
-
-    UIView *view = list.superview;
-    for (NSInteger depth = 0; view && depth < 8; depth++) {
-        if ([view isKindOfClass:[UIWindow class]]) {
-            break;
-        }
-        NSString *name = NSStringFromClass(view.class);
-        BOOL chrome = [name containsString:@"EditMenu"]
-            || [name containsString:@"Callout"]
-            || [name containsString:@"Popover"];
-        view.clipsToBounds = NO;
-        if (chrome) {
-            VLMHidePagingControls(view);
-            CGSize need = CGSizeMake(MAX(view.bounds.size.width, size.width), MAX(view.bounds.size.height, size.height));
-            VLMResizeViewKeepingBottomCenter(view, need);
-        }
-        view = view.superview;
-    }
-    VLMKeepOnScreen(list);
-}
-
-static void VLMApplyVerticalCollectionLayout(id hostObj, BOOL resizeChrome) {
+static void VLMApplyVerticalCollectionLayout(id hostObj) {
     UIView *host = hostObj;
     if (objc_getAssociatedObject(host, kVLMApplyingKey)) {
         return;
@@ -297,43 +252,37 @@ static void VLMApplyVerticalCollectionLayout(id hostObj, BOOL resizeChrome) {
     }
 
     CGSize fitted = VLMVerticalFittingSize(host, host.bounds.size);
-    CGFloat width = fitted.width;
+
+    if (VLMIsOnScreen(host)) {
+        CGPoint bottomCenter = CGPointMake(CGRectGetMidX(host.frame), CGRectGetMaxY(host.frame));
+        CGRect bounds = host.bounds;
+        bounds.size = fitted;
+        host.bounds = bounds;
+        CGRect frame = host.frame;
+        frame.size = fitted;
+        frame.origin.x = bottomCenter.x - fitted.width / 2.0;
+        frame.origin.y = bottomCenter.y - fitted.height;
+        host.frame = frame;
+        VLMKeepOnScreen(host);
+    }
+
+    VLMUnclipAncestors(host);
 
     UICollectionViewLayout *layout = collectionView.collectionViewLayout;
-    UICollectionViewFlowLayout *flow = nil;
-
     if ([layout isKindOfClass:[UICollectionViewFlowLayout class]]) {
-        flow = (UICollectionViewFlowLayout *)layout;
+        UICollectionViewFlowLayout *flow = (UICollectionViewFlowLayout *)layout;
+        CGFloat rowWidth = MAX(host.bounds.size.width, 80.0);
+        CGSize itemSize = CGSizeMake(MAX(rowWidth - 16.0, 80.0), kVLMRowHeight);
+        flow.scrollDirection = UICollectionViewScrollDirectionVertical;
+        flow.itemSize = itemSize;
+        flow.minimumLineSpacing = 0;
+        flow.minimumInteritemSpacing = 0;
+        flow.sectionInset = UIEdgeInsetsMake(4, 8, 4, 8);
+        [flow invalidateLayout];
     } else if (layout) {
         @try {
             [layout setValue:@(UICollectionViewScrollDirectionVertical) forKey:@"scrollDirection"];
         } @catch (__unused NSException *exception) {
-        }
-        if (!objc_getAssociatedObject(host, kVLMReplacedLayoutKey)) {
-            flow = VLMMakeVerticalFlow(width);
-            [collectionView setCollectionViewLayout:flow animated:NO];
-            objc_setAssociatedObject(host, kVLMReplacedLayoutKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-            VLMLog(@"replaced custom layout on %@", host);
-        }
-    }
-
-    if (flow) {
-        CGSize itemSize = CGSizeMake(MAX(width - 16.0, 120.0), kVLMRowHeight);
-        BOOL dirty = NO;
-        if (flow.scrollDirection != UICollectionViewScrollDirectionVertical) {
-            flow.scrollDirection = UICollectionViewScrollDirectionVertical;
-            dirty = YES;
-        }
-        if (!CGSizeEqualToSize(flow.itemSize, itemSize)) {
-            flow.itemSize = itemSize;
-            dirty = YES;
-        }
-        flow.minimumLineSpacing = 0;
-        flow.minimumInteritemSpacing = 0;
-        flow.sectionInset = UIEdgeInsetsMake(4, 8, 4, 8);
-        flow.estimatedItemSize = CGSizeZero;
-        if (dirty) {
-            [flow invalidateLayout];
         }
     }
 
@@ -341,19 +290,11 @@ static void VLMApplyVerticalCollectionLayout(id hostObj, BOOL resizeChrome) {
     collectionView.alwaysBounceHorizontal = NO;
     collectionView.alwaysBounceVertical = YES;
     collectionView.showsHorizontalScrollIndicator = NO;
-    collectionView.showsVerticalScrollIndicator = (VLMItemCount(collectionView) > 8);
     collectionView.clipsToBounds = YES;
-    if (@available(iOS 11.0, *)) {
-        collectionView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-    }
-    collectionView.contentInset = UIEdgeInsetsZero;
-    collectionView.frame = CGRectMake(0, 0, fitted.width, fitted.height);
+    collectionView.frame = host.bounds;
     [collectionView setContentOffset:CGPointZero animated:NO];
 
     VLMHidePagingControls(host);
-    if (resizeChrome) {
-        VLMExpandEditMenuAncestors(host, fitted);
-    }
     objc_setAssociatedObject(host, kVLMApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
@@ -379,7 +320,7 @@ static void VLMEnumerateLabelsAndImages(UIView *view, NSMutableArray<UILabel *> 
 static void VLMRelayoutCell(UIView *cell) {
     CGFloat width = cell.bounds.size.width;
     CGFloat height = cell.bounds.size.height;
-    if (width < 40.0 || height < 8.0) {
+    if (width < 100.0 || height < 8.0) {
         return;
     }
 
@@ -456,21 +397,6 @@ static void VLMRelayoutVisibleCells(id host) {
     for (UIView *cell in collectionView.visibleCells) {
         VLMRelayoutCell(cell);
     }
-}
-
-static CGSize VLMVerticalFittingSize(id host, CGSize orig) {
-    UICollectionView *collectionView = VLMCollectionViewInHost(host);
-    NSInteger count = VLMItemCount(collectionView);
-    if (count <= 0) {
-        CGFloat estimated = orig.width > 1.0 ? round(orig.width / 72.0) : 4.0;
-        count = MAX(1, (NSInteger)estimated);
-    }
-
-    CGFloat width = kVLMMenuWidth;
-    CGFloat height = count * kVLMRowHeight + 8.0;
-    CGFloat maxHeight = MIN(UIScreen.mainScreen.bounds.size.height * 0.48, 440.0);
-    height = MIN(MAX(height, kVLMRowHeight + 8.0), maxHeight);
-    return CGSizeMake(width, height);
 }
 
 static BOOL VLMIsInsideEditMenu(id view) {
@@ -575,7 +501,6 @@ static BOOL VLMIsInsideEditMenu(id view) {
     if (!VLMEditOn()) {
         return orig;
     }
-    VLMApplyVerticalCollectionLayout(self, NO);
     CGSize vertical = VLMVerticalFittingSize(self, orig);
     VLMLog(@"sizeThatFits %@ -> %@", NSStringFromCGSize(orig), NSStringFromCGSize(vertical));
     return vertical;
@@ -595,32 +520,25 @@ static BOOL VLMIsInsideEditMenu(id view) {
         return;
     }
     objc_setAssociatedObject(self, kVLMLayoutGuardKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(self, kVLMFrameGuardKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    VLMApplyVerticalCollectionLayout(self, YES);
+    VLMApplyVerticalCollectionLayout(self);
     VLMRelayoutVisibleCells(self);
-    objc_setAssociatedObject(self, kVLMFrameGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(self, kVLMLayoutGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
-- (void)setBounds:(CGRect)bounds {
-    if (VLMEditOn() && !objc_getAssociatedObject(self, kVLMFrameGuardKey)) {
-        CGSize fitted = VLMVerticalFittingSize(self, bounds.size);
-        bounds.origin = CGPointZero;
-        bounds.size = fitted;
-    }
+- (void)didMoveToWindow {
     %orig;
-}
-
-- (void)setFrame:(CGRect)frame {
-    if (VLMEditOn() && !objc_getAssociatedObject(self, kVLMFrameGuardKey)) {
-        CGSize fitted = VLMVerticalFittingSize(self, frame.size);
-        CGFloat midX = CGRectGetMidX(frame);
-        CGFloat maxY = CGRectGetMaxY(frame);
-        frame.size = fitted;
-        frame.origin.x = midX - fitted.width / 2.0;
-        frame.origin.y = maxY - fitted.height;
+    if (!VLMEditOn() || !self.window) {
+        return;
     }
-    %orig;
+    __weak UIView *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIView *strongSelf = weakSelf;
+        if (!strongSelf.window || !VLMEditOn()) {
+            return;
+        }
+        VLMApplyVerticalCollectionLayout(strongSelf);
+        VLMRelayoutVisibleCells(strongSelf);
+    });
 }
 
 %end
@@ -646,32 +564,11 @@ static BOOL VLMIsInsideEditMenu(id view) {
 
 %hook _UIEditMenuPageButton
 
-- (void)didMoveToWindow {
-    %orig;
-    if (VLMEditOn()) {
-        VLMHideView(self);
-    }
-}
-
 - (void)layoutSubviews {
     %orig;
     if (VLMEditOn()) {
         VLMHideView(self);
     }
-}
-
-- (CGSize)sizeThatFits:(CGSize)size {
-    if (VLMEditOn()) {
-        return CGSizeZero;
-    }
-    return %orig;
-}
-
-- (CGSize)intrinsicContentSize {
-    if (VLMEditOn()) {
-        return CGSizeZero;
-    }
-    return %orig;
 }
 
 %end
@@ -688,23 +585,6 @@ static BOOL VLMIsInsideEditMenu(id view) {
         return;
     }
     self.clipsToBounds = NO;
-    UIView *list = nil;
-    for (UIView *sub in self.subviews) {
-        if (VLMNameContains(sub, @"ListView") || VLMIsCalloutArrow(sub) || VLMIsBackgroundChrome(sub)) {
-            list = VLMNameContains(sub, @"ListView") ? sub : list;
-            continue;
-        }
-        VLMHideView(sub);
-    }
-    if (!list) {
-        return;
-    }
-    CGSize need = VLMVerticalFittingSize(list, list.bounds.size);
-    objc_setAssociatedObject(self, kVLMFrameGuardKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    VLMResizeViewKeepingBottomCenter(self, need);
-    list.frame = self.bounds;
-    objc_setAssociatedObject(self, kVLMFrameGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    VLMKeepOnScreen(self);
 }
 
 %end
@@ -715,6 +595,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
 
 static void VLMPrefsChanged(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     VLMLoadPrefs();
+    NSLog(@"[VerticalMenu] prefs reload enabled=%d context=%d edit=%d debug=%d", gEnabled, gContextMenus, gEditMenus, gDebug);
 }
 
 %ctor {
@@ -730,22 +611,20 @@ static void VLMPrefsChanged(CFNotificationCenterRef center, void *observer, CFSt
 
     %init(ContextMenus);
 
+    BOOL hookedList = NO;
     if (objc_getClass("_UIEditMenuListView")) {
         %init(EditMenuList);
         %init(EditMenuCells);
-        VLMLog(@"hooked _UIEditMenuListView");
-    } else {
-        VLMLog(@"_UIEditMenuListView missing — skip edit-menu hooks");
+        hookedList = YES;
     }
-
     if (objc_getClass("_UIEditMenuPageButton")) {
         %init(EditMenuPageButton);
-        VLMLog(@"hooked _UIEditMenuPageButton");
     }
     if (objc_getClass("_UIEditMenuContainerView")) {
         %init(EditMenuContainer);
-        VLMLog(@"hooked _UIEditMenuContainerView");
     }
 
-    VLMLog(@"loaded in %@", [NSBundle mainBundle].bundleIdentifier ?: @"?");
+    NSLog(@"[VerticalMenu] loaded in %@ enabled=%d context=%d edit=%d debug=%d list=%d",
+          [NSBundle mainBundle].bundleIdentifier ?: @"?",
+          gEnabled, gContextMenus, gEditMenus, gDebug, hookedList);
 }
