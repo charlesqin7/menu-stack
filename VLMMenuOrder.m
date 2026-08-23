@@ -1,6 +1,10 @@
 #import "VLMMenuOrder.h"
 
 #import <dlfcn.h>
+#import <sys/stat.h>
+#import <unistd.h>
+
+extern int64_t sandbox_extension_consume(const char *extension_token);
 
 #if __has_include(<rootless.h>)
 #import <rootless.h>
@@ -19,6 +23,44 @@ NSString * const VLMPrefsStampKey = @"PrefsStamp";
 NSString * const VLMMenuProfilesKey = @"MenuProfiles";
 NSString * const VLMMenuKindEdit = @"edit";
 NSString * const VLMMenuKindContext = @"context";
+NSString * const VLMIncomingNotificationName = @"com.qins.verticalmenu/IncomingPrefs";
+
+static BOOL gApplyingRemotePrefs = NO;
+static BOOL gReplaceProfiles = NO;
+static BOOL gUnsandboxed = NO;
+
+static BOOL VLMIsSpringBoardProcess(void) {
+    NSString *bundle = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
+    return [bundle isEqualToString:@"com.apple.springboard"];
+}
+
+static BOOL VLMCurrentProcessIsPreferences(void) {
+    NSString *bundle = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
+    return [bundle isEqualToString:@"com.apple.Preferences"] || [bundle hasPrefix:@"com.apple.Preferences"];
+}
+
+static NSArray<NSString *> *VLMIncomingDirectories(void) {
+    return @[
+        @"/var/tmp",
+        @"/tmp",
+        @"/var/jb/var/tmp",
+        @"/var/jb/tmp",
+    ];
+}
+
+static NSArray<NSString *> *VLMIncomingPlistPaths(void) {
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *directory in VLMIncomingDirectories()) {
+        NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:directory error:nil];
+        for (NSString *file in files) {
+            if ([file hasPrefix:@"com.qins.verticalmenu.incoming"] && [file.pathExtension isEqualToString:@"plist"]) {
+                [paths addObject:[directory stringByAppendingPathComponent:file]];
+            }
+        }
+    }
+    return paths;
+}
 
 static NSArray<NSString *> *VLMPrefsFilePaths(void) {
     NSMutableArray<NSString *> *paths = [NSMutableArray array];
@@ -86,6 +128,12 @@ static NSArray<NSDictionary *> *VLMPrefsSources(void) {
             [sources addObject:dict];
         }
     }
+    for (NSString *path in VLMIncomingPlistPaths()) {
+        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
+        if (dict.count > 0) {
+            [sources addObject:dict];
+        }
+    }
     return sources;
 }
 
@@ -109,6 +157,28 @@ static id VLMPickPrefValue(NSArray<NSDictionary *> *sources, NSString *key) {
     return VLMCopyCFPrefValue(key);
 }
 
+static NSArray<NSDictionary *> *VLMMergedProfilesFromSources(NSArray<NSDictionary *> *sources) {
+    NSMutableArray<NSDictionary *> *ordered = [sources mutableCopy] ?: [NSMutableArray array];
+    [ordered sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+        NSTimeInterval leftStamp = [left[VLMPrefsStampKey] doubleValue];
+        NSTimeInterval rightStamp = [right[VLMPrefsStampKey] doubleValue];
+        if (leftStamp < rightStamp) {
+            return NSOrderedAscending;
+        }
+        if (leftStamp > rightStamp) {
+            return NSOrderedDescending;
+        }
+        return NSOrderedSame;
+    }];
+    NSArray *merged = @[];
+    for (NSDictionary *dict in ordered) {
+        for (NSDictionary *profile in VLMSanitizeProfiles(dict[VLMMenuProfilesKey])) {
+            merged = VLMUpsertProfile(merged, profile);
+        }
+    }
+    return merged;
+}
+
 NSDictionary<NSString *, id> *VLMReadPrefsDictionary(void) {
     NSArray<NSDictionary *> *sources = VLMPrefsSources();
     NSMutableSet<NSString *> *keys = [NSMutableSet set];
@@ -119,13 +189,21 @@ NSDictionary<NSString *, id> *VLMReadPrefsDictionary(void) {
     [keys addObject:VLMMenuOrderKey];
     [keys addObject:VLMCustomOrderKey];
     [keys addObject:VLMKnownItemsKey];
+    [keys addObject:VLMMenuProfilesKey];
 
     NSMutableDictionary<NSString *, id> *merged = [NSMutableDictionary dictionary];
     for (NSString *key in keys) {
+        if ([key isEqualToString:VLMMenuProfilesKey]) {
+            continue;
+        }
         id value = VLMPickPrefValue(sources, key);
         if (value) {
             merged[key] = value;
         }
+    }
+    NSArray *profiles = VLMMergedProfilesFromSources(sources);
+    if (profiles.count > 0) {
+        merged[VLMMenuProfilesKey] = profiles;
     }
     return merged;
 }
@@ -139,40 +217,64 @@ static void VLMWriteCFPrefValue(NSString *key, id value) {
     CFPreferencesSetValue(cfKey, cfValue, ident, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
 }
 
-static BOOL gApplyingRemotePrefs = NO;
-
-static BOOL VLMIsSpringBoardProcess(void) {
-    NSString *bundle = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
-    return [bundle isEqualToString:@"com.apple.springboard"];
-}
-
 static void VLMTryUnsandbox(void) {
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        static const char *libs[] = {
-            "/var/jb/basebin/jbclient.dylib",
-            "/var/jb/usr/lib/libjailbreak.dylib",
-            "/usr/lib/libjailbreak.dylib",
-            NULL,
-        };
-        for (const char **path = libs; *path; path++) {
-            void *handle = dlopen(*path, RTLD_NOW);
-            if (!handle) {
-                continue;
-            }
-            int (*unsandbox)(void) = dlsym(handle, "jbclient_unsandbox");
-            if (!unsandbox) {
-                unsandbox = dlsym(handle, "unsandbox");
-            }
-            if (!unsandbox) {
-                unsandbox = dlsym(handle, "jbclient_process_unsandbox");
-            }
-            if (unsandbox) {
-                unsandbox();
-                break;
+    if (gUnsandboxed) {
+        return;
+    }
+    static const char *libs[] = {
+        "/var/jb/basebin/jbclient.dylib",
+        "/var/jb/basebin/libjailbreak.dylib",
+        "/var/jb/usr/lib/libjailbreak.dylib",
+        "/var/jb/usr/lib/libSandy.dylib",
+        "/usr/lib/libjailbreak.dylib",
+        "/usr/lib/libSandy.dylib",
+        NULL,
+    };
+    for (const char **path = libs; *path; path++) {
+        void *handle = dlopen(*path, RTLD_NOW);
+        if (!handle) {
+            continue;
+        }
+        int (*unsandbox)(void) = dlsym(handle, "jbclient_unsandbox");
+        if (!unsandbox) {
+            unsandbox = dlsym(handle, "unsandbox");
+        }
+        if (!unsandbox) {
+            unsandbox = dlsym(handle, "jbclient_process_unsandbox");
+        }
+        if (unsandbox) {
+            unsandbox();
+            gUnsandboxed = YES;
+            return;
+        }
+        int (*sandy)(const char *) = dlsym(handle, "libSandy_applyProfile");
+        if (sandy && sandy("SkipSandbox") == 0) {
+            gUnsandboxed = YES;
+            return;
+        }
+        int (*checkin)(char **, char **, char **, bool *) = dlsym(handle, "jbclient_process_checkin");
+        if (checkin) {
+            char *root = NULL;
+            char *uuid = NULL;
+            char *extensions = NULL;
+            bool debugged = false;
+            if (checkin(&root, &uuid, &extensions, &debugged) == 0 && extensions) {
+                char *cursor = extensions;
+                while (cursor && *cursor) {
+                    char *next = strchr(cursor, '|');
+                    if (next) {
+                        *next = '\0';
+                    }
+                    if (*cursor) {
+                        sandbox_extension_consume(cursor);
+                    }
+                    cursor = next ? next + 1 : NULL;
+                }
+                gUnsandboxed = YES;
+                return;
             }
         }
-    });
+    }
 }
 
 static BOOL VLMWritePrefsFiles(NSDictionary<NSString *, id> *changes) {
@@ -234,6 +336,7 @@ void VLMStartPrefsWriterIfNeeded(void) {
         if (port) {
             CFMessagePortSetDispatchQueue(port, dispatch_get_main_queue());
         }
+        VLMIngestIncomingPrefs();
     });
 }
 
@@ -258,11 +361,101 @@ static BOOL VLMSendPrefsToSpringBoard(NSDictionary<NSString *, id> *changes) {
     return status == kCFMessagePortSuccess;
 }
 
+static BOOL VLMDropIncomingPrefs(NSDictionary<NSString *, id> *changes) {
+    if (gApplyingRemotePrefs || changes.count == 0) {
+        return NO;
+    }
+    NSError *error = nil;
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:changes
+                                                              format:NSPropertyListBinaryFormat_v1_0
+                                                             options:0
+                                                               error:&error];
+    if (!data) {
+        return NO;
+    }
+    NSString *name = [NSString stringWithFormat:@"com.qins.verticalmenu.incoming-%.0f-%d.plist",
+                      [[NSDate date] timeIntervalSince1970] * 1000.0, getpid()];
+    BOOL wrote = NO;
+    for (NSString *directory in VLMIncomingDirectories()) {
+        NSString *path = [directory stringByAppendingPathComponent:name];
+        if ([data writeToFile:path atomically:YES]) {
+            chmod(path.fileSystemRepresentation, 0666);
+            wrote = YES;
+        }
+    }
+    if (wrote) {
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            (__bridge CFStringRef)VLMIncomingNotificationName,
+            NULL,
+            NULL,
+            true
+        );
+    }
+    return wrote;
+}
+
+static NSArray *VLMDiskOnlyProfiles(void) {
+    NSMutableArray<NSDictionary *> *sources = [NSMutableArray array];
+    NSDictionary *anyHost = VLMCopyCFPrefs(kCFPreferencesAnyHost);
+    if (anyHost.count > 0) {
+        [sources addObject:anyHost];
+    }
+    NSDictionary *currentHost = VLMCopyCFPrefs(kCFPreferencesCurrentHost);
+    if (currentHost.count > 0) {
+        [sources addObject:currentHost];
+    }
+    for (NSString *path in VLMPrefsFilePaths()) {
+        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
+        if (dict.count > 0) {
+            [sources addObject:dict];
+        }
+    }
+    return VLMMergedProfilesFromSources(sources);
+}
+
+void VLMIngestIncomingPrefs(void) {
+    if (gApplyingRemotePrefs) {
+        return;
+    }
+    if (!VLMIsSpringBoardProcess() && !VLMCurrentProcessIsPreferences()) {
+        return;
+    }
+    NSArray<NSString *> *paths = VLMIncomingPlistPaths();
+    if (paths.count == 0) {
+        return;
+    }
+    gApplyingRemotePrefs = YES;
+    NSDictionary *merged = VLMReadPrefsDictionary();
+    gReplaceProfiles = YES;
+    if (merged[VLMMenuProfilesKey]) {
+        VLMWritePrefsValues(@{VLMMenuProfilesKey: merged[VLMMenuProfilesKey]}, YES);
+    }
+    gReplaceProfiles = NO;
+    for (NSString *path in paths) {
+        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    }
+    gApplyingRemotePrefs = NO;
+}
+
+void VLMReplacePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp) {
+    gReplaceProfiles = YES;
+    VLMWritePrefsValues(updates, bumpStamp);
+    gReplaceProfiles = NO;
+}
+
 void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp) {
     if (updates.count == 0 && !bumpStamp) {
         return;
     }
     NSMutableDictionary<NSString *, id> *changes = [updates mutableCopy] ?: [NSMutableDictionary dictionary];
+    if (changes[VLMMenuProfilesKey] && !gReplaceProfiles) {
+        NSArray *merged = VLMDiskOnlyProfiles();
+        for (NSDictionary *profile in VLMSanitizeProfiles(changes[VLMMenuProfilesKey])) {
+            merged = VLMUpsertProfile(merged, profile);
+        }
+        changes[VLMMenuProfilesKey] = merged;
+    }
     if (bumpStamp) {
         changes[VLMPrefsStampKey] = @((NSTimeInterval)[[NSDate date] timeIntervalSince1970]);
     }
@@ -275,12 +468,21 @@ void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp) 
 
     BOOL wroteFile = VLMWritePrefsFiles(changes);
     if (!wroteFile) {
+        gUnsandboxed = NO;
         VLMTryUnsandbox();
         wroteFile = VLMWritePrefsFiles(changes);
     }
-    if (!wroteFile) {
-        VLMSendPrefsToSpringBoard(changes);
+    BOOL dropped = NO;
+    BOOL ported = NO;
+    BOOL needsHandoff = !wroteFile || (!VLMIsSpringBoardProcess() && !VLMCurrentProcessIsPreferences());
+    if (needsHandoff && !gApplyingRemotePrefs) {
+        ported = VLMSendPrefsToSpringBoard(changes);
+        dropped = VLMDropIncomingPrefs(changes);
     }
+    NSLog(@"[VerticalMenu] prefs persist file=%d port=%d drop=%d profiles=%lu in %@",
+          wroteFile, ported, dropped,
+          (unsigned long)VLMSanitizeProfiles(changes[VLMMenuProfilesKey]).count,
+          [[NSBundle mainBundle] bundleIdentifier] ?: @"?");
 
     CFNotificationCenterPostNotification(
         CFNotificationCenterGetDarwinNotifyCenter(),
@@ -744,6 +946,8 @@ NSString *VLMGuessAppName(NSString *bundleID) {
             @"com.apple.mobilecal": @"日历",
             @"com.apple.reminders": @"提醒事项",
             @"com.apple.Preferences": @"设置",
+            @"com.atebits.Tweetie2": @"X",
+            @"com.twitter.twitter": @"X",
         };
     });
     if (bundleID.length && names[bundleID]) {

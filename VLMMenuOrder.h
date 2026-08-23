@@ -12,10 +12,13 @@ extern NSString * const VLMPrefsStampKey;
 extern NSString * const VLMMenuProfilesKey;
 extern NSString * const VLMMenuKindEdit;
 extern NSString * const VLMMenuKindContext;
+extern NSString * const VLMIncomingNotificationName;
 
 NSDictionary<NSString *, id> *VLMReadPrefsDictionary(void);
 void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp);
+void VLMReplacePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp);
 void VLMStartPrefsWriterIfNeeded(void);
+void VLMIngestIncomingPrefs(void);
 
 NSArray<NSDictionary *> *VLMCatalogItems(void);
 NSArray<NSString *> *VLMCoreOrderIDs(void);

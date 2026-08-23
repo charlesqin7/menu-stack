@@ -1,4 +1,5 @@
 #import <UIKit/UIKit.h>
+#import <QuartzCore/QuartzCore.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import "VLMMenuOrder.h"
@@ -665,7 +666,8 @@ static void VLMRememberUIMenuElements(NSArray *orig, NSString *fallbackKind) {
     }
     BOOL looks = VLMElementsLookLikeActionMenu(expanded) || VLMElementsLookLikeActionMenu(orig);
     BOOL textInput = VLMResponderIsTextInput(VLMFindFirstResponder());
-    if (textInput && (looks || VLMElementsHaveCatalogHit(expanded))) {
+    BOOL catalog = VLMElementsHaveCatalogHit(expanded);
+    if (textInput || catalog) {
         VLMRememberMenuProfile(VLMMenuKindEdit, records);
         return;
     }
@@ -813,6 +815,7 @@ static const void *kVLMSetupDoneKey = &kVLMSetupDoneKey;
 static const void *kVLMLastCellSizeKey = &kVLMLastCellSizeKey;
 static const void *kVLMDumpedKey = &kVLMDumpedKey;
 static const void *kVLMRememberDebounceKey = &kVLMRememberDebounceKey;
+static const void *kVLMFrameGuardKey = &kVLMFrameGuardKey;
 
 static BOOL VLMNameLooksLikeArrow(UIView *view);
 static void VLMDisableConstraints(UIView *view);
@@ -904,7 +907,9 @@ static void VLMHidePagingControls(id host) {
 }
 
 static void VLMUnclipAncestors(UIView *view) {
-    view.clipsToBounds = NO;
+    view.clipsToBounds = YES;
+    view.layer.cornerRadius = 14.0;
+    view.layer.masksToBounds = YES;
     UIView *current = view.superview;
     for (NSInteger depth = 0; current && depth < 6; depth++) {
         if ([current isKindOfClass:[UIWindow class]]) {
@@ -968,6 +973,40 @@ static void VLMSizeBackgroundsToHost(UIView *host) {
             if (!VLMFramesClose(sub.frame, host.bounds)) {
                 sub.frame = host.bounds;
             }
+            sub.clipsToBounds = YES;
+        }
+    }
+}
+
+static void VLMApplyCheapPlatterChrome(UIView *host) {
+    if (!host) {
+        return;
+    }
+    host.clipsToBounds = YES;
+    host.layer.cornerRadius = 14.0;
+    host.layer.masksToBounds = YES;
+    VLMHidePagingControls(host);
+    VLMSizeBackgroundsToHost(host);
+    for (UIView *sub in host.subviews) {
+        NSString *name = NSStringFromClass(sub.class);
+        if ([name containsString:@"Shadow"]
+            || [name containsString:@"PageButton"]
+            || [name containsString:@"Dimming"]
+            || [name containsString:@"Cutout"]) {
+            VLMHideView(sub);
+            continue;
+        }
+        if ([sub isKindOfClass:[UIVisualEffectView class]]
+            || [name containsString:@"VisualEffect"]
+            || [name containsString:@"Background"]
+            || [name containsString:@"Platter"]
+            || [name containsString:@"Material"]) {
+            if (!VLMFramesClose(sub.frame, host.bounds)) {
+                sub.frame = host.bounds;
+            }
+            sub.clipsToBounds = YES;
+            sub.layer.cornerRadius = 14.0;
+            sub.layer.masksToBounds = YES;
         }
     }
 }
@@ -1984,6 +2023,11 @@ static void VLMScheduleRememberFromList(UIView *host) {
     return fabs(oldBounds.size.width - newBounds.size.width) > 0.5;
 }
 
+- (CGPoint)targetContentOffsetForProposedContentOffset:(CGPoint)proposedContentOffset withScrollingVelocity:(CGPoint)velocity {
+    proposedContentOffset.x = 0;
+    return proposedContentOffset;
+}
+
 @end
 
 static UICollectionViewLayout *VLMEnsureVerticalListLayout(UICollectionView *collectionView) {
@@ -2035,6 +2079,52 @@ static void VLMMatchCollectionFrame(UIView *host, UICollectionView *collectionVi
     }
 }
 
+static void VLMStripSizeAnimations(UIView *view) {
+    if (!view) {
+        return;
+    }
+    [view.layer removeAnimationForKey:@"bounds"];
+    [view.layer removeAnimationForKey:@"bounds.size"];
+    [view.layer removeAnimationForKey:@"position"];
+    [view.layer removeAnimationForKey:@"position.y"];
+    [view.layer removeAnimationForKey:@"transform"];
+    [view.layer removeAnimationForKey:@"frame"];
+}
+
+static CGRect VLMCoercedListFrame(UIView *host, CGRect frame) {
+    CGSize fitted = VLMVerticalFittingSize(host, frame.size);
+    frame.size = fitted;
+    return frame;
+}
+
+static void VLMConfigureCollectionPhysics(UICollectionView *collectionView, NSInteger visibleCount) {
+    collectionView.pagingEnabled = NO;
+    collectionView.scrollEnabled = YES;
+    collectionView.directionalLockEnabled = YES;
+    collectionView.alwaysBounceHorizontal = NO;
+    collectionView.alwaysBounceVertical = (visibleCount > kVLMVisibleRows);
+    collectionView.decelerationRate = UIScrollViewDecelerationRateNormal;
+    collectionView.delaysContentTouches = NO;
+    collectionView.canCancelContentTouches = YES;
+    collectionView.showsHorizontalScrollIndicator = NO;
+    collectionView.showsVerticalScrollIndicator = (visibleCount > kVLMVisibleRows);
+    collectionView.clipsToBounds = YES;
+    collectionView.backgroundColor = VLMMenuBackgroundColor();
+    collectionView.layer.cornerRadius = 14.0;
+    collectionView.layer.masksToBounds = YES;
+    if (@available(iOS 10.0, *)) {
+        collectionView.prefetchingEnabled = NO;
+    }
+    if (@available(iOS 11.0, *)) {
+        collectionView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    }
+    if (@available(iOS 13.0, *)) {
+        collectionView.automaticallyAdjustsScrollIndicatorInsets = NO;
+    }
+    collectionView.contentInset = UIEdgeInsetsZero;
+    collectionView.scrollIndicatorInsets = UIEdgeInsetsZero;
+}
+
 static void VLMApplyVerticalCollectionLayout(id hostObj) {
     UIView *host = hostObj;
     if (objc_getAssociatedObject(host, kVLMApplyingKey)) {
@@ -2051,7 +2141,7 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     BOOL scrolling = VLMCollectionViewIsScrolling(collectionView);
     BOOL setupDone = objc_getAssociatedObject(host, kVLMSetupDoneKey) != nil;
     if (setupDone && scrolling) {
-        VLMMatchCollectionFrame(host, collectionView);
+        VLMApplyCheapPlatterChrome(host);
         objc_setAssociatedObject(host, kVLMApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
@@ -2064,9 +2154,19 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
         objc_setAssociatedObject(host, kVLMLoggedLayoutKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    CGRect frameBefore = host.frame;
     CGSize fitted = VLMVerticalFittingSize(host, host.bounds.size);
-    if (VLMIsOnScreen(host)) {
+    CGRect coerced = host.frame;
+    coerced.size = fitted;
+    if (!VLMFramesClose(host.bounds, CGRectMake(0, 0, fitted.width, fitted.height))
+        || !VLMFramesClose(host.frame, coerced)) {
+        objc_setAssociatedObject(host, kVLMFrameGuardKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        host.bounds = CGRectMake(0, 0, fitted.width, fitted.height);
+        host.frame = coerced;
+        objc_setAssociatedObject(host, kVLMFrameGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        VLMStripSizeAnimations(host);
+    }
+
+    if (!setupDone && VLMIsOnScreen(host)) {
         CGRect selection = VLMSelectionRectInWindow(host.window);
         if (!VLMPositionHostNearSelection(host, fitted)) {
             BOOL growDown = VLMShouldGrowDownward(host);
@@ -2081,10 +2181,13 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
             frame.size = fitted;
             frame.origin.x = minX;
             frame.origin.y = growDown ? minY : (maxY - fitted.height);
-            if (!VLMFramesClose(host.frame, frame) || !VLMFramesClose(host.bounds, CGRectMake(0, 0, fitted.width, fitted.height))) {
+            if (!VLMFramesClose(host.frame, frame)) {
+                objc_setAssociatedObject(host, kVLMFrameGuardKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 host.bounds = CGRectMake(0, 0, fitted.width, fitted.height);
                 host.frame = frame;
+                objc_setAssociatedObject(host, kVLMFrameGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
                 VLMKeepOnScreen(host);
+                VLMStripSizeAnimations(host);
             }
             if (!CGRectIsNull(selection)) {
                 VLMScheduleArrow(host);
@@ -2093,34 +2196,17 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
         }
     }
 
-    BOOL frameChanged = !VLMFramesClose(frameBefore, host.frame);
-    if (!setupDone || frameChanged) {
+    if (!setupDone) {
         VLMUnclipAncestors(host);
         VLMStripShadows(host);
         VLMConcealStaleChrome(host);
         VLMHideStrayBackdrops(host);
+        VLMExpandCollectionChain(host, collectionView);
     }
-    VLMSizeBackgroundsToHost(host);
-    VLMExpandCollectionChain(host, collectionView);
+    VLMApplyCheapPlatterChrome(host);
 
     NSInteger visibleCount = VLMVisibleMappedCount(collectionView, VLMItemCount(collectionView));
-    collectionView.pagingEnabled = NO;
-    collectionView.scrollEnabled = YES;
-    collectionView.alwaysBounceHorizontal = NO;
-    collectionView.alwaysBounceVertical = (visibleCount > kVLMVisibleRows);
-    collectionView.showsHorizontalScrollIndicator = NO;
-    collectionView.showsVerticalScrollIndicator = (visibleCount > kVLMVisibleRows);
-    collectionView.clipsToBounds = YES;
-    if (@available(iOS 11.0, *)) {
-        collectionView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-    }
-    if (@available(iOS 13.0, *)) {
-        collectionView.automaticallyAdjustsScrollIndicatorInsets = NO;
-    }
-    collectionView.contentInset = UIEdgeInsetsZero;
-    collectionView.scrollIndicatorInsets = UIEdgeInsetsZero;
-    collectionView.backgroundColor = VLMMenuBackgroundColor();
-    collectionView.layer.cornerRadius = 14.0;
+    VLMConfigureCollectionPhysics(collectionView, visibleCount);
     VLMMatchCollectionFrame(host, collectionView);
 
     BOOL needsInstall = ![collectionView.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]];
@@ -2129,7 +2215,6 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
         [collectionView layoutIfNeeded];
     }
 
-    VLMHidePagingControls(host);
     VLMScheduleArrow(host);
     VLMDumpMenuHierarchy(host);
     if (!setupDone) {
@@ -2452,6 +2537,14 @@ static void VLMRelayoutCell(UIView *cell) {
     if (objc_getAssociatedObject(cell, kVLMTitleOverlayActiveKey)
         && [lastSize isKindOfClass:[NSValue class]]
         && CGSizeEqualToSize(lastSize.CGSizeValue, cell.bounds.size)) {
+        UIView *content = [cell isKindOfClass:[UICollectionViewCell class]] ? ((UICollectionViewCell *)cell).contentView : cell;
+        UIView *cover = objc_getAssociatedObject(content, kVLMCoverKey);
+        if (cover && !CGRectEqualToRect(cover.frame, cell.bounds)) {
+            cover.frame = cell.bounds;
+        }
+        if (!CGRectEqualToRect(content.frame, cell.bounds)) {
+            content.frame = cell.bounds;
+        }
         return;
     }
     if (objc_getAssociatedObject(cell, kVLMCellGuardKey)) {
@@ -2574,6 +2667,11 @@ static void VLMRelayoutCell(UIView *cell) {
         [cell addSubview:titleSlot];
     }
 
+    cell.backgroundColor = VLMMenuBackgroundColor();
+    if ([cell isKindOfClass:[UICollectionViewCell class]]) {
+        ((UICollectionViewCell *)cell).contentView.backgroundColor = VLMMenuBackgroundColor();
+    }
+    cover.backgroundColor = VLMMenuBackgroundColor();
     cover.frame = cell.bounds;
     cover.hidden = NO;
     cover.alpha = 1;
@@ -2763,6 +2861,31 @@ static BOOL VLMIsInsideEditMenu(id view) {
     return VLMVerticalFittingSize(self, orig);
 }
 
+- (void)setFrame:(CGRect)frame {
+    if (VLMEditOn() && !objc_getAssociatedObject(self, kVLMFrameGuardKey)) {
+        CGRect coerced = VLMCoercedListFrame(self, frame);
+        if (fabs(frame.size.width - coerced.size.width) > 0.5
+            || fabs(frame.size.height - coerced.size.height) > 0.5) {
+            frame.size = coerced.size;
+            VLMStripSizeAnimations(self);
+        }
+    }
+    %orig(frame);
+}
+
+- (void)setBounds:(CGRect)bounds {
+    if (VLMEditOn() && !objc_getAssociatedObject(self, kVLMFrameGuardKey)) {
+        CGSize fitted = VLMVerticalFittingSize(self, bounds.size);
+        if (fabs(bounds.size.width - fitted.width) > 0.5
+            || fabs(bounds.size.height - fitted.height) > 0.5) {
+            bounds.size = fitted;
+            bounds.origin = CGPointZero;
+            VLMStripSizeAnimations(self);
+        }
+    }
+    %orig(bounds);
+}
+
 - (void)layoutSubviews {
     %orig;
     if (!VLMEditOn() || objc_getAssociatedObject(self, kVLMLayoutGuardKey)) {
@@ -2771,10 +2894,15 @@ static BOOL VLMIsInsideEditMenu(id view) {
     objc_setAssociatedObject(self, kVLMLayoutGuardKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     UICollectionView *collectionView = VLMCollectionViewInHost(self);
     BOOL scrolling = VLMCollectionViewIsScrolling(collectionView);
-    VLMApplyVerticalCollectionLayout(self);
-    if (!scrolling) {
-        VLMRelayoutVisibleCells(self);
-    }
+    [UIView performWithoutAnimation:^{
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        VLMApplyVerticalCollectionLayout(self);
+        if (!scrolling) {
+            VLMRelayoutVisibleCells(self);
+        }
+        [CATransaction commit];
+    }];
     objc_setAssociatedObject(self, kVLMLayoutGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
@@ -2794,15 +2922,13 @@ static BOOL VLMIsInsideEditMenu(id view) {
     if (!VLMEditOn()) {
         return;
     }
-    __weak UIView *weakSelf = self;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIView *strongSelf = weakSelf;
-        if (!strongSelf.window || !VLMEditOn()) {
-            return;
-        }
-        VLMApplyVerticalCollectionLayout(strongSelf);
-        VLMRelayoutVisibleCells(strongSelf);
-    });
+    [UIView performWithoutAnimation:^{
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        VLMApplyVerticalCollectionLayout(self);
+        VLMRelayoutVisibleCells(self);
+        [CATransaction commit];
+    }];
 }
 
 %end
@@ -2850,6 +2976,27 @@ static BOOL VLMIsInsideEditMenu(id view) {
 %group EditMenuCollectionView
 
 %hook UICollectionView
+
+- (void)setPagingEnabled:(BOOL)paging {
+    if (VLMEditOn() && [self.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]]) {
+        paging = NO;
+    }
+    %orig(paging);
+}
+
+- (BOOL)isPagingEnabled {
+    if (VLMEditOn() && [self.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]]) {
+        return NO;
+    }
+    return %orig;
+}
+
+- (void)setAlwaysBounceHorizontal:(BOOL)bounce {
+    if (VLMEditOn() && [self.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]]) {
+        bounce = NO;
+    }
+    %orig(bounce);
+}
 
 - (void)setContentOffset:(CGPoint)offset {
     if (VLMEditOn() && fabs(offset.x) > 0.01
@@ -2899,6 +3046,21 @@ static BOOL VLMIsInsideEditMenu(id view) {
 %group EditMenuPageButton
 
 %hook _UIEditMenuPageButton
+
+- (void)didMoveToSuperview {
+    %orig;
+    if (VLMEditOn()) {
+        VLMHideView(self);
+    }
+}
+
+- (void)setHidden:(BOOL)hidden {
+    %orig(VLMEditOn() ? YES : hidden);
+}
+
+- (void)setAlpha:(CGFloat)alpha {
+    %orig(VLMEditOn() ? 0 : alpha);
+}
 
 - (void)layoutSubviews {
     %orig;
@@ -3004,6 +3166,11 @@ static void VLMPrefsChanged(CFNotificationCenterRef center, void *observer, CFSt
     NSLog(@"[VerticalMenu] prefs reload enabled=%d context=%d edit=%d debug=%d profiles=%lu hidden=%lu", gEnabled, gContextMenus, gEditMenus, gDebug, (unsigned long)gProfiles.count, (unsigned long)gLegacyHidden.count);
 }
 
+static void VLMIncomingPrefsChanged(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    VLMIngestIncomingPrefs();
+    VLMLoadPrefs();
+}
+
 %ctor {
     VLMLoadPrefs();
     VLMStartPrefsWriterIfNeeded();
@@ -3012,6 +3179,14 @@ static void VLMPrefsChanged(CFNotificationCenterRef center, void *observer, CFSt
         NULL,
         VLMPrefsChanged,
         (__bridge CFStringRef)kVLMReloadNotification,
+        NULL,
+        CFNotificationSuspensionBehaviorDeliverImmediately
+    );
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        NULL,
+        VLMIncomingPrefsChanged,
+        (__bridge CFStringRef)VLMIncomingNotificationName,
         NULL,
         CFNotificationSuspensionBehaviorDeliverImmediately
     );

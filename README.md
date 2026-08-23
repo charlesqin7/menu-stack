@@ -131,6 +131,13 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
 
+## 更新（1.0.41）
+
+- X 选字后设置里仍没有：第三方 App 经常写不进全局配置。改为把记录丢到 `/var/tmp`，SpringBoard 和设置页会合并进来；读取时按菜单逐条合并，不会用一份新记录盖掉其它 App。
+- 菜单弹出时跳一下：第一次就按纵向尺寸落位，并关掉系统把横条拉成竖列表的尺寸动画。
+- 滑动后右边一条灰：系统会把原来约 347pt 宽的毛玻璃/翻页按钮加回来。列表自己裁切到 250pt，并持续藏掉翻页按钮。
+- 滑动发硬：滚动时不再改 collectionView 的 frame / contentOffset，并关掉横向分页吸附。
+
 ## 更新（1.0.40）
 
 - 选字菜单滑动卡顿：滚动时不再每帧重排、扫整棵菜单树、写层级日志或改 contentOffset；单元格只在尺寸变化时重画。

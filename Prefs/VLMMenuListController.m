@@ -48,6 +48,7 @@
 }
 
 - (void)reloadFromPrefs {
+    VLMIngestIncomingPrefs();
     NSDictionary *prefs = VLMReadPrefsDictionary();
     id raw = prefs[VLMMenuProfilesKey];
     _profiles = VLMSanitizeProfiles(raw);
@@ -58,7 +59,7 @@
 }
 
 - (void)writeProfiles {
-    VLMWritePrefsValues(@{VLMMenuProfilesKey: _profiles ?: @[]}, YES);
+    VLMReplacePrefsValues(@{VLMMenuProfilesKey: _profiles ?: @[]}, YES);
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
