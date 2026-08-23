@@ -149,6 +149,13 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
 
+## 更新（1.0.47）
+
+- 修复关闭「上下文菜单」后仍会应用全局排序和隐藏的问题；两个菜单总开关现在都会完整恢复系统原始行为。
+- 菜单匹配、排序、隐藏和旧配置迁移拆成独立规则模块，并增加中英文标题、自定义项、全局与 App 例外、旧版排序等回归测试。
+- 偏好设置改为每次通知只读取一次；详细诊断日志只在打开「调试日志」后输出，并移除没有实际作用的钩子。
+- CI 会先跑规则与版本一致性检查，再并行构建 rootless / roothide；已有版本标签和 Release 不再被后续构建覆盖。
+
 ## 更新（1.0.46）
 
 - 到处都卡：每个 UIKit 进程在读设置时都会把清洗后的 `MenuProfiles` 写回磁盘，Darwin 通知再让所有进程重读，形成写盘风暴。改为读设置只读；SpringBoard 收 Incoming 放到后台队列并合并 0.4 秒；层级日志不再写 Incoming。
