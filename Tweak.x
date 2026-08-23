@@ -599,6 +599,7 @@ static void VLMMaskViewToRect(UIView *view, CGRect rectInView) {
     mask.path = [UIBezierPath bezierPathWithRoundedRect:inset cornerRadius:14.0].CGPath;
 }
 
+static UIView *VLMContainerAncestor(UIView *host) __attribute__((unused));
 static UIView *VLMContainerAncestor(UIView *host) {
     UIView *current = host.superview;
     for (NSInteger depth = 0; current && depth < 8; depth++) {
@@ -619,18 +620,24 @@ static void VLMConcealStaleChrome(UIView *host) {
         return;
     }
 
-    CGRect maskRect = host.frame;
+    CGRect rectInAncestor = host.frame;
     UIView *arrow = objc_getAssociatedObject(host, kVLMCustomArrowKey);
     if (arrow && arrow.superview == parent && !CGRectIsEmpty(arrow.frame)) {
-        maskRect = CGRectUnion(maskRect, arrow.frame);
+        rectInAncestor = CGRectUnion(rectInAncestor, arrow.frame);
     }
 
-    UIView *container = VLMContainerAncestor(host);
-    if (container) {
-        VLMMaskViewToRect(container, [container convertRect:maskRect fromView:parent]);
-    }
-    if (parent != container) {
-        VLMMaskViewToRect(parent, maskRect);
+    UIView *ancestor = parent;
+    for (NSInteger depth = 0; ancestor && depth < 8; depth++) {
+        if ([ancestor isKindOfClass:[UIWindow class]]) {
+            break;
+        }
+        VLMMaskViewToRect(ancestor, rectInAncestor);
+        UIView *next = ancestor.superview;
+        if (!next || [next isKindOfClass:[UIWindow class]]) {
+            break;
+        }
+        rectInAncestor = [next convertRect:rectInAncestor fromView:ancestor];
+        ancestor = next;
     }
 }
 
@@ -684,6 +691,47 @@ static void VLMHideStrayBackdrops(UIView *host) {
         }
         current = current.superview;
     }
+}
+
+static void VLMAppendHierarchy(UIView *view, UIView *host, NSInteger depth, NSMutableString *out) {
+    if (!view || depth > 10 || out.length > 20000) {
+        return;
+    }
+    NSString *pad = [@"" stringByPaddingToLength:MIN(depth * 2, 20) withString:@" " startingAtIndex:0];
+    [out appendFormat:@"%@%@%@ frame=%@ hidden=%d alpha=%.2f mask=%d\n",
+        pad,
+        view == host ? @"* " : @"",
+        NSStringFromClass(view.class),
+        NSStringFromCGRect(view.frame),
+        view.hidden,
+        view.alpha,
+        view.layer.mask != nil];
+    for (UIView *sub in view.subviews) {
+        VLMAppendHierarchy(sub, host, depth + 1, out);
+    }
+}
+
+static void VLMDumpMenuHierarchy(UIView *host) {
+    static NSTimeInterval lastDump;
+    NSTimeInterval now = [NSDate timeIntervalSinceReferenceDate];
+    if (now - lastDump < 2.0) {
+        return;
+    }
+    lastDump = now;
+
+    UIView *root = host;
+    for (NSInteger depth = 0; root.superview && depth < 10; depth++) {
+        if ([root.superview isKindOfClass:[UIWindow class]]) {
+            break;
+        }
+        root = root.superview;
+    }
+
+    NSMutableString *out = [NSMutableString stringWithFormat:@"[VerticalMenu] hierarchy dump %@\n", [NSDate date]];
+    VLMAppendHierarchy(root, host, 0, out);
+    NSString *path = [NSTemporaryDirectory() stringByAppendingPathComponent:@"VerticalMenu-menu.txt"];
+    [out writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+    VLMLog(@"hierarchy -> %@", path);
 }
 
 static void VLMHideSystemArrowsNear(UIView *host) {
@@ -1039,6 +1087,7 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     VLMSizeBackgroundsToHost(host);
     VLMConcealStaleChrome(host);
     VLMHideStrayBackdrops(host);
+    VLMDumpMenuHierarchy(host);
 
     collectionView.pagingEnabled = NO;
     collectionView.scrollEnabled = YES;
