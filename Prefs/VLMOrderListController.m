@@ -194,7 +194,7 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
     objc_setAssociatedObject(toggle, kVLMSwitchItemIDKey, itemID, OBJC_ASSOCIATION_COPY_NONATOMIC);
     [toggle addTarget:self action:@selector(visibilitySwitchChanged:) forControlEvents:UIControlEventValueChanged];
     cell.editingAccessoryView = toggle;
-    cell.accessoryView = toggle;
+    cell.accessoryView = nil;
     return cell;
 }
 
