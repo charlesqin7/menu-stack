@@ -2,8 +2,6 @@
 #import "../VLMMenuOrder.h"
 #import <objc/runtime.h>
 
-static NSString * const kVLMPrefsID = @"com.qins.verticalmenu";
-static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadPrefs";
 static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
 
 @implementation VLMOrderListController {
@@ -55,29 +53,7 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
 }
 
 - (NSDictionary *)prefsDictionary {
-    CFStringRef ident = (__bridge CFStringRef)kVLMPrefsID;
-    CFPreferencesAppSynchronize(ident);
-    CFArrayRef keys = CFPreferencesCopyKeyList(ident, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-    if (keys) {
-        CFDictionaryRef cfDict = CFPreferencesCopyMultiple(keys, ident, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
-        CFRelease(keys);
-        NSDictionary *dict = CFBridgingRelease(cfDict);
-        if (dict.count > 0) {
-            return dict;
-        }
-    }
-    NSArray<NSString *> *paths = @[
-        @"/var/jb/var/mobile/Library/Preferences/com.qins.verticalmenu.plist",
-        @"/var/jb/Library/Preferences/com.qins.verticalmenu.plist",
-        @"/var/mobile/Library/Preferences/com.qins.verticalmenu.plist",
-    ];
-    for (NSString *path in paths) {
-        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
-        if (dict.count > 0) {
-            return dict;
-        }
-    }
-    return @{};
+    return VLMReadPrefsDictionary();
 }
 
 - (void)reloadFromPrefs {
@@ -104,20 +80,11 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
 }
 
 - (void)writePrefsAndEnableCustomSort:(BOOL)enableCustomSort {
-    CFStringRef ident = (__bridge CFStringRef)kVLMPrefsID;
-    CFPreferencesSetAppValue((__bridge CFStringRef)VLMMenuOrderKey, (__bridge CFArrayRef)_order, ident);
-    CFPreferencesSetAppValue((__bridge CFStringRef)VLMHiddenItemsKey, (__bridge CFArrayRef)_hidden.allObjects, ident);
-    if (enableCustomSort) {
-        CFPreferencesSetAppValue((__bridge CFStringRef)VLMCustomOrderKey, kCFBooleanTrue, ident);
-    }
-    CFPreferencesAppSynchronize(ident);
-    CFNotificationCenterPostNotification(
-        CFNotificationCenterGetDarwinNotifyCenter(),
-        (__bridge CFStringRef)kVLMReloadNotification,
-        NULL,
-        NULL,
-        true
-    );
+    VLMWritePrefsValues(@{
+        VLMMenuOrderKey: [_order copy] ?: @[],
+        VLMHiddenItemsKey: _hidden.allObjects ?: @[],
+        VLMCustomOrderKey: enableCustomSort ? @YES : @NO,
+    }, YES);
 }
 
 - (void)resetOrder {

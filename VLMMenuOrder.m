@@ -1,9 +1,176 @@
 #import "VLMMenuOrder.h"
 
+#if __has_include(<rootless.h>)
+#import <rootless.h>
+#endif
+#if __has_include(<roothide.h>)
+#import <roothide.h>
+#endif
+
+NSString * const VLMPrefsIdentifier = @"com.qins.verticalmenu";
+NSString * const VLMReloadNotificationName = @"com.qins.verticalmenu/ReloadPrefs";
 NSString * const VLMMenuOrderKey = @"MenuItemOrder";
 NSString * const VLMCustomOrderKey = @"CustomOrder";
 NSString * const VLMKnownItemsKey = @"KnownMenuItems";
 NSString * const VLMHiddenItemsKey = @"HiddenMenuItems";
+NSString * const VLMPrefsStampKey = @"PrefsStamp";
+
+static NSArray<NSString *> *VLMPrefsFilePaths(void) {
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    void (^add)(NSString *) = ^(NSString *path) {
+        if (path.length == 0 || [paths containsObject:path]) {
+            return;
+        }
+        [paths addObject:path];
+    };
+#if defined(ROOT_PATH_NS)
+    add(ROOT_PATH_NS(@"/var/mobile/Library/Preferences/com.qins.verticalmenu.plist"));
+#endif
+#ifdef THEOS_PACKAGE_INSTALL_PREFIX
+    add(@(THEOS_PACKAGE_INSTALL_PREFIX "/var/mobile/Library/Preferences/com.qins.verticalmenu.plist"));
+#endif
+#if __has_include(<roothide.h>)
+    add(jbroot(@"/var/mobile/Library/Preferences/com.qins.verticalmenu.plist"));
+#endif
+    add(@"/var/jb/var/mobile/Library/Preferences/com.qins.verticalmenu.plist");
+    add(@"/var/jb/Library/Preferences/com.qins.verticalmenu.plist");
+    add(@"/var/mobile/Library/Preferences/com.qins.verticalmenu.plist");
+    return paths;
+}
+
+static NSDictionary *VLMCopyCFPrefs(CFStringRef host) {
+    CFStringRef ident = (__bridge CFStringRef)VLMPrefsIdentifier;
+    CFPreferencesAppSynchronize(ident);
+    CFArrayRef keys = CFPreferencesCopyKeyList(ident, kCFPreferencesCurrentUser, host);
+    if (!keys) {
+        return @{};
+    }
+    CFDictionaryRef cfDict = CFPreferencesCopyMultiple(keys, ident, kCFPreferencesCurrentUser, host);
+    CFRelease(keys);
+    return CFBridgingRelease(cfDict) ?: @{};
+}
+
+static id VLMCopyCFPrefValue(NSString *key) {
+    CFStringRef ident = (__bridge CFStringRef)VLMPrefsIdentifier;
+    CFStringRef cfKey = (__bridge CFStringRef)key;
+    CFPreferencesAppSynchronize(ident);
+    id appValue = CFBridgingRelease(CFPreferencesCopyAppValue(cfKey, ident));
+    if (appValue) {
+        return appValue;
+    }
+    id anyHost = CFBridgingRelease(CFPreferencesCopyValue(cfKey, ident, kCFPreferencesCurrentUser, kCFPreferencesAnyHost));
+    if (anyHost) {
+        return anyHost;
+    }
+    return CFBridgingRelease(CFPreferencesCopyValue(cfKey, ident, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost));
+}
+
+static NSArray<NSDictionary *> *VLMPrefsSources(void) {
+    NSMutableArray<NSDictionary *> *sources = [NSMutableArray array];
+    NSDictionary *anyHost = VLMCopyCFPrefs(kCFPreferencesAnyHost);
+    if (anyHost.count > 0) {
+        [sources addObject:anyHost];
+    }
+    NSDictionary *currentHost = VLMCopyCFPrefs(kCFPreferencesCurrentHost);
+    if (currentHost.count > 0) {
+        [sources addObject:currentHost];
+    }
+    for (NSString *path in VLMPrefsFilePaths()) {
+        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
+        if (dict.count > 0) {
+            [sources addObject:dict];
+        }
+    }
+    return sources;
+}
+
+static id VLMPickPrefValue(NSArray<NSDictionary *> *sources, NSString *key) {
+    id chosen = nil;
+    NSTimeInterval chosenStamp = -1;
+    for (NSDictionary *dict in sources) {
+        id value = dict[key];
+        if (!value) {
+            continue;
+        }
+        NSTimeInterval stamp = [dict[VLMPrefsStampKey] doubleValue];
+        if (!chosen || stamp >= chosenStamp) {
+            chosen = value;
+            chosenStamp = stamp;
+        }
+    }
+    if (chosen) {
+        return chosen;
+    }
+    return VLMCopyCFPrefValue(key);
+}
+
+NSDictionary<NSString *, id> *VLMReadPrefsDictionary(void) {
+    NSArray<NSDictionary *> *sources = VLMPrefsSources();
+    NSMutableSet<NSString *> *keys = [NSMutableSet set];
+    for (NSDictionary *dict in sources) {
+        [keys addObjectsFromArray:dict.allKeys];
+    }
+    [keys addObject:VLMHiddenItemsKey];
+    [keys addObject:VLMMenuOrderKey];
+    [keys addObject:VLMCustomOrderKey];
+    [keys addObject:VLMKnownItemsKey];
+
+    NSMutableDictionary<NSString *, id> *merged = [NSMutableDictionary dictionary];
+    for (NSString *key in keys) {
+        id value = VLMPickPrefValue(sources, key);
+        if (value) {
+            merged[key] = value;
+        }
+    }
+    return merged;
+}
+
+static void VLMWriteCFPrefValue(NSString *key, id value) {
+    CFStringRef ident = (__bridge CFStringRef)VLMPrefsIdentifier;
+    CFStringRef cfKey = (__bridge CFStringRef)key;
+    CFPropertyListRef cfValue = (__bridge CFPropertyListRef)value;
+    CFPreferencesSetAppValue(cfKey, cfValue, ident);
+    CFPreferencesSetValue(cfKey, cfValue, ident, kCFPreferencesCurrentUser, kCFPreferencesAnyHost);
+    CFPreferencesSetValue(cfKey, cfValue, ident, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
+}
+
+void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp) {
+    if (updates.count == 0 && !bumpStamp) {
+        return;
+    }
+    NSMutableDictionary<NSString *, id> *changes = [updates mutableCopy] ?: [NSMutableDictionary dictionary];
+    if (bumpStamp) {
+        changes[VLMPrefsStampKey] = @((NSTimeInterval)[[NSDate date] timeIntervalSince1970]);
+    }
+    for (NSString *key in changes) {
+        VLMWriteCFPrefValue(key, changes[key]);
+    }
+    CFPreferencesAppSynchronize((__bridge CFStringRef)VLMPrefsIdentifier);
+
+    for (NSString *path in VLMPrefsFilePaths()) {
+        NSString *directory = [path stringByDeletingLastPathComponent];
+        BOOL isDirectory = NO;
+        BOOL directoryExists = [[NSFileManager defaultManager] fileExistsAtPath:directory isDirectory:&isDirectory];
+        if (!directoryExists || !isDirectory) {
+            continue;
+        }
+        if (![[NSFileManager defaultManager] isWritableFileAtPath:directory] &&
+            ![[NSFileManager defaultManager] isWritableFileAtPath:path]) {
+            continue;
+        }
+        NSMutableDictionary *fileDict = [[NSDictionary dictionaryWithContentsOfFile:path] mutableCopy] ?: [NSMutableDictionary dictionary];
+        [fileDict addEntriesFromDictionary:changes];
+        [fileDict writeToFile:path atomically:YES];
+    }
+
+    CFNotificationCenterPostNotification(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        (__bridge CFStringRef)VLMReloadNotificationName,
+        NULL,
+        NULL,
+        true
+    );
+}
 
 static NSString *VLMFold(NSString *text) {
     if (text.length == 0) {

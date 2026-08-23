@@ -2,10 +2,16 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
+extern NSString * const VLMPrefsIdentifier;
+extern NSString * const VLMReloadNotificationName;
 extern NSString * const VLMMenuOrderKey;
 extern NSString * const VLMCustomOrderKey;
 extern NSString * const VLMKnownItemsKey;
 extern NSString * const VLMHiddenItemsKey;
+extern NSString * const VLMPrefsStampKey;
+
+NSDictionary<NSString *, id> *VLMReadPrefsDictionary(void);
+void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp);
 
 NSArray<NSDictionary *> *VLMCatalogItems(void);
 NSArray<NSString *> *VLMCoreOrderIDs(void);
