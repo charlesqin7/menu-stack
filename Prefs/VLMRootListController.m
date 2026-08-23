@@ -1,4 +1,5 @@
 #import "VLMRootListController.h"
+#import <Preferences/PSSpecifier.h>
 #import <spawn.h>
 #import <objc/runtime.h>
 #import <dlfcn.h>
@@ -8,16 +9,6 @@ extern char **environ;
 #ifndef VLM_VERSION
 #define VLM_VERSION "1.0.32"
 #endif
-
-@interface PSSpecifier : NSObject
-- (id)propertyForKey:(NSString *)key;
-- (void)setProperty:(id)property forKey:(NSString *)key;
-- (void)setButtonAction:(SEL)action;
-@end
-
-@interface PSListController (VLM)
-- (PSSpecifier *)specifierAtIndexPath:(NSIndexPath *)indexPath;
-@end
 
 @interface VLMOrderListController : UIViewController
 @end
