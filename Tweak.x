@@ -110,6 +110,7 @@ static const void *kVLMContainerGuardKey = &kVLMContainerGuardKey;
 static const void *kVLMCellGuardKey = &kVLMCellGuardKey;
 static const void *kVLMArrowScheduledKey = &kVLMArrowScheduledKey;
 static const void *kVLMHidSystemArrowKey = &kVLMHidSystemArrowKey;
+static const void *kVLMChromeMaskKey = &kVLMChromeMaskKey;
 static const void *kVLMStrippedButtonKey = &kVLMStrippedButtonKey;
 static const void *kVLMCapturedTitleKey = &kVLMCapturedTitleKey;
 static const void *kVLMCapturedImageKey = &kVLMCapturedImageKey;
@@ -563,67 +564,48 @@ static void VLMSetFrameInWindow(UIView *view, CGRect windowFrame) {
     view.frame = local;
 }
 
-static void VLMHideLeftoverChrome(UIView *host) {
+static void VLMMaskViewToRect(UIView *view, CGRect rectInView) {
+    if (!view || rectInView.size.width < 8.0 || rectInView.size.height < 8.0) {
+        return;
+    }
+    CAShapeLayer *mask = objc_getAssociatedObject(view, kVLMChromeMaskKey);
+    if (![mask isKindOfClass:[CAShapeLayer class]]) {
+        mask = [CAShapeLayer layer];
+        mask.fillColor = [UIColor blackColor].CGColor;
+        objc_setAssociatedObject(view, kVLMChromeMaskKey, mask, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        view.layer.mask = mask;
+    }
+    CGRect inset = CGRectInset(rectInView, -2.0, -2.0);
+    mask.path = [UIBezierPath bezierPathWithRoundedRect:inset cornerRadius:14.0].CGPath;
+}
+
+static void VLMConcealStaleChrome(UIView *host) {
     UIView *parent = host.superview;
     if (!parent || [parent isKindOfClass:[UIWindow class]]) {
         return;
     }
-    for (UIView *sub in parent.subviews) {
-        if (sub == host || [sub isKindOfClass:[VLMSelectionAnchorView class]] || VLMNameLooksLikeArrow(sub)) {
-            continue;
-        }
-        NSString *name = NSStringFromClass(sub.class);
-        if ([name containsString:@"Page"]
-            || [name localizedCaseInsensitiveContainsString:@"shadow"]
-            || [name containsString:@"Dimming"]
-            || [name containsString:@"Cutout"]) {
-            VLMHideView(sub);
-            continue;
-        }
-        if (sub.bounds.size.width > host.bounds.size.width + 8.0
-            || sub.bounds.size.height > host.bounds.size.height + 8.0
-            || fabs(sub.frame.origin.x - host.frame.origin.x) > 8.0
-            || fabs(sub.frame.origin.y - host.frame.origin.y) > 8.0) {
-            if (!VLMFramesClose(sub.frame, host.frame)) {
-                sub.frame = host.frame;
-            }
+
+    parent.backgroundColor = [UIColor clearColor];
+    parent.opaque = NO;
+    VLMClearLayerShadow(parent.layer);
+
+    CGRect maskRect = host.frame;
+    UIView *arrow = objc_getAssociatedObject(host, kVLMCustomArrowKey);
+    if (arrow && arrow.superview == parent && !CGRectIsEmpty(arrow.frame)) {
+        maskRect = CGRectUnion(maskRect, arrow.frame);
+    }
+    VLMMaskViewToRect(parent, maskRect);
+
+    UIView *grand = parent.superview;
+    if (grand && ![grand isKindOfClass:[UIWindow class]]) {
+        NSString *name = NSStringFromClass(grand.class);
+        if ([name containsString:@"EditMenu"] || [name containsString:@"Presentation"] || [name containsString:@"Container"]) {
+            grand.backgroundColor = [UIColor clearColor];
+            grand.opaque = NO;
+            VLMClearLayerShadow(grand.layer);
+            VLMMaskViewToRect(grand, [grand convertRect:maskRect fromView:parent]);
         }
     }
-}
-
-static void VLMFitChromeToHost(UIView *host, CGRect hostWindowRect) {
-    if (!host.window || CGRectIsNull(hostWindowRect) || hostWindowRect.size.width < 8.0) {
-        return;
-    }
-
-    UIView *container = host.superview;
-    UIView *current = host.superview;
-    for (NSInteger depth = 0; current && depth < 4; depth++) {
-        if ([current isKindOfClass:[UIWindow class]]) {
-            break;
-        }
-        NSString *name = NSStringFromClass(current.class);
-        if ([name containsString:@"EditMenuContainer"] || [name containsString:@"ContainerView"]) {
-            container = current;
-            break;
-        }
-        current = current.superview;
-    }
-
-    if (container && container != host && container.superview && ![container isKindOfClass:[UIWindow class]]) {
-        VLMDisableConstraints(container);
-        container.backgroundColor = [UIColor clearColor];
-        VLMClearLayerShadow(container.layer);
-        container.clipsToBounds = NO;
-        CGRect local = [container.superview convertRect:hostWindowRect fromView:host.window];
-        if (!VLMFramesClose(container.frame, local)) {
-            container.bounds = CGRectMake(0, 0, local.size.width, local.size.height);
-            container.frame = local;
-        }
-    }
-
-    VLMSetFrameInWindow(host, hostWindowRect);
-    VLMHideLeftoverChrome(host);
 }
 
 static void VLMHideSystemArrowsNear(UIView *host) {
@@ -806,7 +788,8 @@ static BOOL VLMPositionHostNearSelection(UIView *host, CGSize fitted) {
         }
     }
 
-    VLMFitChromeToHost(host, listRect);
+    VLMSetFrameInWindow(host, listRect);
+    VLMConcealStaleChrome(host);
     VLMScheduleArrow(host);
     VLMLog(@"pin selection=%@ list=%@ below=%d", NSStringFromCGRect(selection), NSStringFromCGRect(listRect), below);
     return YES;
@@ -964,9 +947,7 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
                 host.frame = frame;
                 VLMKeepOnScreen(host);
             }
-            if (host.window) {
-                VLMFitChromeToHost(host, [host convertRect:host.bounds toView:host.window]);
-            }
+            VLMConcealStaleChrome(host);
             if (!CGRectIsNull(selection)) {
                 VLMScheduleArrow(host);
             }
@@ -977,9 +958,7 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     VLMUnclipAncestors(host);
     VLMStripShadows(host);
     VLMSizeBackgroundsToHost(host);
-    if (host.window) {
-        VLMFitChromeToHost(host, [host convertRect:host.bounds toView:host.window]);
-    }
+    VLMConcealStaleChrome(host);
 
     collectionView.pagingEnabled = NO;
     collectionView.scrollEnabled = YES;
@@ -1650,11 +1629,11 @@ static BOOL VLMIsInsideEditMenu(id view) {
     objc_setAssociatedObject(self, kVLMContainerGuardKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     self.clipsToBounds = NO;
     self.backgroundColor = [UIColor clearColor];
+    self.opaque = NO;
     VLMClearLayerShadow(self.layer);
-    VLMStripShadows(self);
     UIView *list = VLMFindEditMenuList(self, 4);
-    if (list && list.window) {
-        VLMFitChromeToHost(list, [list convertRect:list.bounds toView:list.window]);
+    if (list) {
+        VLMConcealStaleChrome(list);
     }
     objc_setAssociatedObject(self, kVLMContainerGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
