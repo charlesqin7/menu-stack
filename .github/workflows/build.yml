@@ -15,8 +15,23 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    name: Validate menu rules
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Validate project metadata
+        run: bash Tests/validate-project.sh
+
+      - name: Run Foundation rule tests
+        run: bash Tests/run-tests.sh
+
   build:
     name: Build VerticalMenu (${{ matrix.scheme }})
+    needs: test
     runs-on: macos-latest
     timeout-minutes: 30
     strategy:

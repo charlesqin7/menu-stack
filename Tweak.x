@@ -171,15 +171,7 @@ static NSString *VLMTitleFromObject(id object) {
 }
 
 static NSString *VLMCustomItemIDForTitle(NSString *title) {
-    NSString *fromCatalog = VLMCatalogIDForTitle(title);
-    if (fromCatalog) {
-        return fromCatalog;
-    }
-    NSString *clean = VLMTrimTitle(title);
-    if (clean.length == 0) {
-        return nil;
-    }
-    return [@"custom:" stringByAppendingString:clean];
+    return VLMRulesItemIDForTitle(VLMCatalogItems(), title);
 }
 
 static BOOL VLMObjectIsMenu(id object) {
@@ -499,58 +491,6 @@ static NSArray<NSString *> *VLMEffectiveOrder(NSString *kind, NSDictionary *prof
     return VLMCachedGlobalOrder(kind);
 }
 
-static NSArray *VLMFilteredElements(NSArray *elements, NSSet<NSString *> *hidden) {
-    if (!gEnabled || hidden.count == 0 || elements.count == 0) {
-        return elements;
-    }
-    NSMutableArray *visible = [NSMutableArray array];
-    for (id element in elements) {
-        NSString *itemID = VLMCatalogIDForElement(element);
-        if (VLMItemHiddenInSet(itemID, hidden) ||
-            ([element isKindOfClass:[NSString class]] && VLMTitleHiddenInSet(element, hidden))) {
-            continue;
-        }
-        [visible addObject:element];
-    }
-    if (visible.count == 0 || visible.count == elements.count) {
-        return elements;
-    }
-    return visible;
-}
-
-static NSArray *VLMSortedElements(NSArray *elements, NSArray<NSString *> *orderIDs) {
-    if (elements.count < 2 || orderIDs.count == 0) {
-        return elements;
-    }
-    NSArray *sorted = [elements sortedArrayUsingComparator:^NSComparisonResult(id left, id right) {
-        NSInteger leftRank = VLMRankForItemID(VLMCatalogIDForElement(left), orderIDs);
-        NSInteger rightRank = VLMRankForItemID(VLMCatalogIDForElement(right), orderIDs);
-        if (leftRank < rightRank) {
-            return NSOrderedAscending;
-        }
-        if (leftRank > rightRank) {
-            return NSOrderedDescending;
-        }
-        NSUInteger leftIndex = [elements indexOfObjectIdenticalTo:left];
-        NSUInteger rightIndex = [elements indexOfObjectIdenticalTo:right];
-        if (leftIndex < rightIndex) {
-            return NSOrderedAscending;
-        }
-        if (leftIndex > rightIndex) {
-            return NSOrderedDescending;
-        }
-        return NSOrderedSame;
-    }];
-    BOOL changed = NO;
-    for (NSUInteger index = 0; index < elements.count; index++) {
-        if (elements[index] != sorted[index]) {
-            changed = YES;
-            break;
-        }
-    }
-    return changed ? sorted : elements;
-}
-
 static NSArray *VLMRewrittenElementsForKind(NSArray *elements, NSString *kind) {
     if (!gEnabled || elements.count == 0) {
         return elements;
@@ -565,11 +505,17 @@ static NSArray *VLMRewrittenElementsForKind(NSArray *elements, NSString *kind) {
     NSArray *working = flatten ? VLMExpandedMenuElements(elements, NO) : elements;
     NSDictionary *profile = VLMProfileForKind(kind);
     NSSet<NSString *> *hidden = VLMEffectiveHiddenSet(kind, profile);
-    NSArray *filtered = VLMFilteredElements(working, hidden);
-    if (VLMUsesCustomOrder(kind, profile)) {
-        return VLMSortedElements(filtered, VLMEffectiveOrder(kind, profile));
-    }
-    return filtered;
+    return VLMRulesApplyToItems(working,
+                                ^BOOL(id element) {
+        NSString *itemID = VLMCatalogIDForElement(element);
+        return VLMItemHiddenInSet(itemID, hidden)
+            || ([element isKindOfClass:[NSString class]] && VLMTitleHiddenInSet(element, hidden));
+    },
+                                VLMEffectiveOrder(kind, profile),
+                                VLMUsesCustomOrder(kind, profile),
+                                ^NSString *(id element) {
+        return VLMCatalogIDForElement(element);
+    });
 }
 
 static BOOL VLMCurrentProcessShouldRememberMenus(void) {

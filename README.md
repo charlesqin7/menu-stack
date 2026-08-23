@@ -53,6 +53,9 @@ Makefile                 Theos 主工程，默认 rootless
 control                  deb 元数据
 VerticalMenu.plist       注入 com.apple.UIKit（所有 UIKit 进程）
 Tweak.x                  Logos hook
+VLMMenuRules.h/.m        可独立测试的菜单匹配、排序、隐藏与迁移规则
+VLMMenuOrder.h/.m        设置持久化、跨进程同步和规则数据适配
+Tests/                   Foundation 规则测试与工程元数据检查
 Prefs/                   设置 App 里的「纵向菜单」开关与菜单排序页（含图标）
 layout/Library/PreferenceLoader/Preferences/
                          VerticalMenu.plist 设置入口（含图标）
@@ -99,11 +102,21 @@ make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
 
 把对应越狱环境的 deb 拷到手机，用 Sileo / Zebra / `dpkg -i` 安装，然后 respring。设置里的「纵向菜单」由 PreferenceLoader 打开 PreferenceBundle（`VerticalMenuPrefs`），里面可以开关功能并拖动调整菜单顺序。
 
-每次往 `main` 的 push 会跑 `.github/workflows/build.yml`：
+PR、手动运行以及每次往 `main` 的 push 都会跑 `.github/workflows/build.yml`：
 
-1. 分别编译 **rootless** 和 **roothide** 两份 `.deb`
-2. 作为 Actions artifact 上传（`verticalmenu-rootless` / `verticalmenu-roothide`，以及合并后的 `release`）
-3. 构建成功后发布到 GitHub Releases（标签 `v` + `control` 里的版本号，例如 [Releases](https://github.com/charlesqin7/menu-stack/releases)），deb 挂在该 Release 下面
+1. 先检查 plist / 版本一致性并运行 Foundation 菜单规则测试
+2. 分别编译 **rootless** 和 **roothide** 两份 `.deb`
+3. 作为 Actions artifact 上传（`verticalmenu-rootless` / `verticalmenu-roothide`，以及合并后的 `release`）
+4. 只有 `main` push 且 `control` 对应的版本标签尚不存在时才发布 GitHub Release；已有标签和 Release 永不覆盖
+
+发布新版本前，要同时更新 `control` 与 `Prefs/Resources/Info.plist` 里的版本号。创建 Release 标签不会再次触发一轮构建。
+
+在 macOS 本地可先运行：
+
+```bash
+bash Tests/validate-project.sh
+bash Tests/run-tests.sh
+```
 
 RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把 Safari 从多任务划掉再开。
 

@@ -5,14 +5,17 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <sys/stat.h>
+#import <TargetConditionals.h>
 #import <unistd.h>
 
 extern int64_t sandbox_extension_consume(const char *extension_token);
 
+#if TARGET_OS_IPHONE
 @interface NSDistributedNotificationCenter : NSNotificationCenter
 + (NSDistributedNotificationCenter *)defaultCenter;
 - (void)postNotificationName:(NSNotificationName)name object:(NSString *)object userInfo:(NSDictionary *)userInfo deliverImmediately:(BOOL)deliverImmediately;
 @end
+#endif
 
 #if __has_include(<rootless.h>)
 #import <rootless.h>
@@ -871,17 +874,6 @@ void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp) 
     );
 }
 
-static NSString *VLMFold(NSString *text) {
-    if (text.length == 0) {
-        return @"";
-    }
-    NSString *trimmed = [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    trimmed = [trimmed stringByReplacingOccurrencesOfString:@"…" withString:@""];
-    trimmed = [trimmed stringByReplacingOccurrencesOfString:@"..." withString:@""];
-    trimmed = [trimmed stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    return trimmed.lowercaseString;
-}
-
 static NSArray<NSDictionary *> *VLMCatalog(void) {
     static NSArray<NSDictionary *> *items;
     static dispatch_once_t onceToken;
@@ -1053,15 +1045,7 @@ NSArray<NSDictionary *> *VLMCatalogItems(void) {
 }
 
 static BOOL VLMIsCatalogID(NSString *itemID) {
-    if (itemID.length == 0) {
-        return NO;
-    }
-    for (NSDictionary *item in VLMCatalog()) {
-        if ([item[@"id"] isEqualToString:itemID]) {
-            return YES;
-        }
-    }
-    return NO;
+    return VLMRulesCatalogContainsID(VLMCatalog(), itemID);
 }
 
 NSArray<NSString *> *VLMCoreOrderIDs(void) {
@@ -1092,76 +1076,19 @@ NSArray<NSString *> *VLMDefaultOrderIDs(void) {
 }
 
 NSString *VLMLabelForItemID(NSString *itemID) {
-    if (itemID.length == 0) {
-        return nil;
-    }
-    for (NSDictionary *item in VLMCatalog()) {
-        if ([item[@"id"] isEqualToString:itemID]) {
-            return item[@"label"];
-        }
-    }
-    if ([itemID hasPrefix:@"custom:"]) {
-        return [itemID substringFromIndex:7];
-    }
-    return itemID;
+    return VLMRulesCatalogLabelForID(VLMCatalog(), itemID);
 }
 
 NSString *VLMCatalogIDForTitle(NSString *title) {
-    NSString *folded = VLMFold(title);
-    if (folded.length == 0) {
-        return nil;
-    }
-    for (NSDictionary *item in VLMCatalog()) {
-        for (NSString *candidate in item[@"titles"]) {
-            if ([VLMFold(candidate) isEqualToString:folded]) {
-                return item[@"id"];
-            }
-        }
-    }
-    return nil;
+    return VLMRulesCatalogIDForTitle(VLMCatalog(), title);
 }
 
 NSString *VLMCatalogIDForSelectorName(NSString *selectorName) {
-    if (selectorName.length == 0) {
-        return nil;
-    }
-    for (NSDictionary *item in VLMCatalog()) {
-        for (NSString *sel in item[@"sels"]) {
-            if ([sel isEqualToString:selectorName]) {
-                return item[@"id"];
-            }
-        }
-    }
-    return nil;
+    return VLMRulesCatalogIDForSelector(VLMCatalog(), selectorName);
 }
 
 NSString *VLMCatalogIDForIdentifier(NSString *identifier) {
-    if (identifier.length == 0) {
-        return nil;
-    }
-    NSString *last = identifier.lastPathComponent.lowercaseString;
-    if (last.length == 0) {
-        last = identifier.lowercaseString;
-    }
-    for (NSDictionary *item in VLMCatalog()) {
-        NSString *itemID = item[@"id"];
-        if ([last isEqualToString:itemID.lowercaseString]) {
-            return itemID;
-        }
-        if ([last hasSuffix:[@"." stringByAppendingString:itemID.lowercaseString]]) {
-            return itemID;
-        }
-        for (NSString *alias in item[@"idents"]) {
-            if ([identifier isEqualToString:alias] || [last isEqualToString:alias.lowercaseString]) {
-                return itemID;
-            }
-        }
-    }
-    NSString *fromTitle = VLMCatalogIDForTitle(identifier);
-    if (fromTitle) {
-        return fromTitle;
-    }
-    return nil;
+    return VLMRulesCatalogIDForIdentifier(VLMCatalog(), identifier);
 }
 
 static NSString *VLMExtractItemID(id item) {
@@ -1247,52 +1174,7 @@ NSArray<NSString *> *VLMSanitizeHiddenIDs(id value) {
 }
 
 BOOL VLMIsCapturedJunkItem(NSString *title, NSString *itemID) {
-    NSString *ident = itemID ?: @"";
-    NSString *clean = [title stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if ([ident isEqualToString:@"showHelp:"]
-        || [ident isEqualToString:@"custom:showHelp:"]
-        || [ident hasSuffix:@"showHelp:"]
-        || [ident isEqualToString:@"help:"]
-        || [ident hasPrefix:@"file:"]
-        || [ident containsString:@"orderFront"]) {
-        return YES;
-    }
-    if (clean.length == 0) {
-        return [ident localizedCaseInsensitiveContainsString:@"showHelp"];
-    }
-    unichar first = [clean characterAtIndex:0];
-    if (first == 0x300C || first == 0x300E || first == 0xFF5B || first == '{' || first == 0x3008) {
-        return YES;
-    }
-    static NSSet<NSString *> *exact;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        exact = [NSSet setWithObjects:
-                 @"MD清单", @"MD 清单",
-                 @"文件", @"窗口", @"帮助", @"显示", @"服务",
-                 @"以下均为示例作为参考", @"以下均为示例",
-                 @"脚本框架", @"｛脚本框架｝",
-                 @"JSBox",
-                 @"换行分割", @"中英排版", @"去除空格", @"反转文字",
-                 @"清理剪贴板中商店链接",
-                 nil];
-    });
-    if ([exact containsObject:clean]) {
-        return YES;
-    }
-    if ([clean containsString:@"以下均为示例"]
-        || [clean containsString:@"脚本框架"]
-        || [clean localizedCaseInsensitiveContainsString:@"jsbox"]
-        || [clean containsString:@"作为参考"]
-        || [clean containsString:@"可组合变量"]
-        || [clean containsString:@"所填即所得"]
-        || [clean containsString:@"执行后看看"]) {
-        return YES;
-    }
-    if ([clean hasSuffix:@":"] && [clean containsString:@"Help"]) {
-        return YES;
-    }
-    return NO;
+    return VLMRulesIsCapturedJunkItem(title, itemID);
 }
 
 static void VLMAppendKnownItem(NSMutableArray<NSDictionary *> *result, NSMutableSet<NSString *> *seen, id item) {
@@ -1395,7 +1277,7 @@ NSString *VLMKindDisplayName(NSString *kind) {
 
 NSString *VLMProfileIDForMenu(NSString *kind, NSString *bundleID, NSArray<NSString *> *itemIDs) {
     (void)itemIDs;
-    return [NSString stringWithFormat:@"%@|%@", kind.length ? kind : VLMMenuKindEdit, bundleID ?: @""];
+    return VLMRulesProfileID(kind.length ? kind : VLMMenuKindEdit, bundleID);
 }
 
 static NSDictionary *VLMNormalizedProfile(NSDictionary *profile) {
@@ -1706,49 +1588,8 @@ NSArray<NSDictionary *> *VLMRemoveProfile(NSArray *profiles, NSString *profileID
 }
 
 static NSDictionary *VLMNormalizedGlobalRule(NSDictionary *rule, NSString *kind) {
-    NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
-    NSMutableSet<NSString *> *seen = [NSMutableSet set];
-    for (NSDictionary *item in VLMCatalogItems()) {
-        NSString *itemID = item[@"id"];
-        if (itemID.length == 0 || [seen containsObject:itemID]) {
-            continue;
-        }
-        [seen addObject:itemID];
-        [items addObject:@{
-            @"id": itemID,
-            @"title": item[@"label"] ?: VLMLabelForItemID(itemID) ?: itemID,
-        }];
-    }
-    if ([rule[@"items"] isKindOfClass:[NSArray class]]) {
-        for (id item in (NSArray *)rule[@"items"]) {
-            VLMAppendKnownItem(items, seen, item);
-        }
-    }
-    NSMutableArray<NSString *> *order = [NSMutableArray array];
-    NSMutableSet<NSString *> *seenOrder = [NSMutableSet set];
-    if ([rule[@"order"] isKindOfClass:[NSArray class]]) {
-        for (id item in (NSArray *)rule[@"order"]) {
-            NSString *itemID = VLMExtractItemID(item);
-            if (itemID.length == 0 || [seenOrder containsObject:itemID] || ![seen containsObject:itemID]) {
-                continue;
-            }
-            [seenOrder addObject:itemID];
-            [order addObject:itemID];
-        }
-    }
-    for (NSDictionary *item in items) {
-        NSString *itemID = item[@"id"];
-        if (itemID.length && ![seenOrder containsObject:itemID]) {
-            [order addObject:itemID];
-        }
-    }
     (void)kind;
-    return @{
-        @"items": items,
-        @"order": order,
-        @"hidden": VLMSanitizeHiddenIDs(rule[@"hidden"]),
-        @"customOrder": @([rule[@"customOrder"] boolValue]),
-    };
+    return VLMRulesNormalizedGlobalRule(rule, VLMCatalogItems());
 }
 
 static NSDictionary *VLMGlobalRulesFromDictionary(NSDictionary<NSString *, id> *prefs) {
@@ -1784,30 +1625,25 @@ BOOL VLMGlobalCustomOrder(NSString *kind) {
 }
 
 NSArray<NSString *> *VLMEffectiveOrderIDs(NSString *kind, NSDictionary *profile) {
-    if (VLMProfileCustomOrder(profile)) {
-        NSArray<NSString *> *order = VLMProfileDisplayOrder(profile);
-        if (order.count > 0) {
-            return order;
-        }
-    }
-    return VLMGlobalOrderIDs(kind);
+    NSDictionary *profileRule = @{
+        @"order": VLMProfileDisplayOrder(profile),
+        @"customOrder": @(VLMProfileCustomOrder(profile)),
+    };
+    return VLMRulesEffectiveOrderIDs(VLMGlobalRuleForKind(kind), profileRule);
 }
 
 NSArray<NSString *> *VLMEffectiveHiddenIDs(NSString *kind, NSDictionary *profile) {
-    NSMutableArray<NSString *> *hidden = [NSMutableArray array];
-    NSMutableSet<NSString *> *seen = [NSMutableSet set];
-    for (NSString *itemID in [VLMGlobalHiddenIDs(kind) arrayByAddingObjectsFromArray:VLMProfileHiddenIDs(profile)]) {
-        if (itemID.length == 0 || [seen containsObject:itemID]) {
-            continue;
-        }
-        [seen addObject:itemID];
-        [hidden addObject:itemID];
-    }
-    return hidden;
+    NSDictionary *profileRule = @{
+        @"hidden": VLMProfileHiddenIDs(profile),
+    };
+    return VLMRulesEffectiveHiddenIDs(VLMGlobalRuleForKind(kind), profileRule);
 }
 
 BOOL VLMEffectiveCustomOrder(NSString *kind, NSDictionary *profile) {
-    return VLMProfileCustomOrder(profile) || VLMGlobalCustomOrder(kind);
+    NSDictionary *profileRule = @{
+        @"customOrder": @(VLMProfileCustomOrder(profile)),
+    };
+    return VLMRulesEffectiveCustomOrder(VLMGlobalRuleForKind(kind), profileRule);
 }
 
 void VLMWriteGlobalRule(NSString *kind,
@@ -1838,54 +1674,6 @@ void VLMWriteGlobalRule(NSString *kind,
     VLMWritePrefsValues(@{VLMGlobalRulesKey: rules}, YES);
 }
 
-static NSDictionary *VLMRuleByMergingProfiles(NSString *kind, NSArray<NSDictionary *> *profiles, NSArray *legacyHidden) {
-    NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
-    NSMutableSet<NSString *> *seen = [NSMutableSet set];
-    NSMutableArray<NSString *> *hidden = [NSMutableArray array];
-    NSMutableSet<NSString *> *seenHidden = [NSMutableSet set];
-    NSDictionary *customSource = nil;
-    NSTimeInterval newest = -1;
-    for (NSDictionary *item in VLMCatalogItems()) {
-        VLMAppendKnownItem(items, seen, item);
-    }
-    for (NSDictionary *profile in profiles) {
-        NSString *profileKind = profile[@"kind"] ?: VLMMenuKindEdit;
-        if (![profileKind isEqualToString:kind]) {
-            continue;
-        }
-        for (NSDictionary *item in VLMProfileItems(profile)) {
-            VLMAppendKnownItem(items, seen, item);
-        }
-        for (NSString *itemID in VLMProfileHiddenIDs(profile)) {
-            if (itemID.length == 0 || [seenHidden containsObject:itemID]) {
-                continue;
-            }
-            [seenHidden addObject:itemID];
-            [hidden addObject:itemID];
-        }
-        NSTimeInterval seenAt = [profile[@"seenAt"] doubleValue];
-        if (VLMProfileCustomOrder(profile) && seenAt >= newest) {
-            newest = seenAt;
-            customSource = profile;
-        }
-    }
-    for (id item in legacyHidden) {
-        NSString *itemID = VLMExtractItemID(item);
-        if (itemID.length == 0 || [seenHidden containsObject:itemID]) {
-            continue;
-        }
-        [seenHidden addObject:itemID];
-        [hidden addObject:itemID];
-    }
-    NSArray<NSString *> *order = customSource ? VLMProfileDisplayOrder(customSource) : VLMDefaultOrderIDs();
-    return VLMNormalizedGlobalRule(@{
-        @"items": items,
-        @"order": order,
-        @"hidden": hidden,
-        @"customOrder": @(customSource != nil),
-    }, kind);
-}
-
 void VLMMigrateToGlobalRulesIfNeeded(void) {
     if (!VLMIsSpringBoardProcess() && !VLMCurrentProcessIsPreferences()) {
         return;
@@ -1897,9 +1685,12 @@ void VLMMigrateToGlobalRulesIfNeeded(void) {
     }
     NSArray *profiles = VLMSanitizeProfiles(prefs[VLMMenuProfilesKey]);
     NSArray *legacyHidden = VLMSanitizeHiddenIDs(prefs[VLMHiddenItemsKey]);
-    NSMutableDictionary *next = [rules mutableCopy] ?: [NSMutableDictionary dictionary];
-    next[VLMMenuKindEdit] = VLMRuleByMergingProfiles(VLMMenuKindEdit, profiles, legacyHidden);
-    next[VLMMenuKindContext] = VLMRuleByMergingProfiles(VLMMenuKindContext, profiles, @[]);
-    next[@"migrated"] = @YES;
+    NSDictionary *next = VLMRulesMigratedGlobalRules(rules,
+                                                       profiles,
+                                                       legacyHidden,
+                                                       VLMCatalogItems(),
+                                                       VLMDefaultOrderIDs(),
+                                                       VLMMenuKindEdit,
+                                                       VLMMenuKindContext);
     VLMWritePrefsValues(@{VLMGlobalRulesKey: next}, YES);
 }
