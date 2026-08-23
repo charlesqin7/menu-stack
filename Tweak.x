@@ -680,15 +680,108 @@ static void VLMDisableConstraints(UIView *view) {
     }
 }
 
-static void VLMEnumerateLabelsAndImages(UIView *view, NSMutableArray<UILabel *> *labels, NSMutableArray<UIImageView *> *images) {
+static void VLMWalkMenuParts(UIView *view, UIView *skip, NSMutableArray<UILabel *> *labels, NSMutableArray<UIImageView *> *images, NSMutableArray<UIImage *> *extraImages) {
+    if (!view || view == skip) {
+        return;
+    }
     if ([view isKindOfClass:[UILabel class]]) {
         [labels addObject:(UILabel *)view];
-    } else if ([view isKindOfClass:[UIImageView class]]) {
+    }
+    if ([view isKindOfClass:[UIImageView class]]) {
         [images addObject:(UIImageView *)view];
     }
-    for (UIView *sub in view.subviews) {
-        VLMEnumerateLabelsAndImages(sub, labels, images);
+    if ([view isKindOfClass:[UIButton class]]) {
+        UIButton *button = (UIButton *)view;
+        UIImage *image = [button imageForState:UIControlStateNormal] ?: button.currentImage;
+        if (image) {
+            [extraImages addObject:image];
+        }
+        if (button.titleLabel && ![labels containsObject:button.titleLabel]) {
+            [labels addObject:button.titleLabel];
+        }
+        if (button.imageView && ![images containsObject:button.imageView]) {
+            [images addObject:button.imageView];
+        }
     }
+    for (UIView *sub in view.subviews) {
+        VLMWalkMenuParts(sub, skip, labels, images, extraImages);
+    }
+}
+
+static UIImage *VLMKVCImage(id object) {
+    if (!object) {
+        return nil;
+    }
+    static NSArray<NSString *> *keys;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keys = @[@"image", @"_image", @"icon", @"_icon"];
+    });
+    for (NSString *key in keys) {
+        @try {
+            id value = [object valueForKey:key];
+            if ([value isKindOfClass:[UIImage class]]) {
+                return value;
+            }
+            if ([value isKindOfClass:[UIImageView class]]) {
+                UIImage *image = [(UIImageView *)value image];
+                if (image) {
+                    return image;
+                }
+            }
+        } @catch (__unused NSException *exception) {
+        }
+    }
+    return nil;
+}
+
+static UILabel *VLMBestTitleLabel(NSArray<UILabel *> *labels) {
+    UILabel *title = nil;
+    for (UILabel *label in labels) {
+        NSString *text = [label.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (text.length == 0 || label.alpha < 0.05) {
+            continue;
+        }
+        if (!title || text.length > title.text.length) {
+            title = label;
+        }
+    }
+    return title;
+}
+
+static UILabel *VLMKVCTitleLabel(id object) {
+    if (!object) {
+        return nil;
+    }
+    static NSArray<NSString *> *keys;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keys = @[@"titleLabel", @"_titleLabel", @"label", @"_label", @"textLabel"];
+    });
+    for (NSString *key in keys) {
+        @try {
+            id value = [object valueForKey:key];
+            if ([value isKindOfClass:[UILabel class]] && [[value text] length] > 0) {
+                return value;
+            }
+        } @catch (__unused NSException *exception) {
+        }
+    }
+    return nil;
+}
+
+static BOOL VLMIsBackgroundImageView(UIImageView *imageView, UIView *content) {
+    CGSize imageSize = imageView.bounds.size;
+    CGSize contentSize = content.bounds.size;
+    return imageSize.width > contentSize.width * 0.75 && imageSize.height > contentSize.height * 0.75;
+}
+
+static BOOL VLMImageIsUsableIcon(UIImage *image) {
+    if (!image) {
+        return NO;
+    }
+    CGSize size = image.size;
+    return size.width >= 4.0 && size.height >= 4.0;
 }
 
 static UIImage *VLMFallbackMenuIcon(void) {
@@ -696,9 +789,10 @@ static UIImage *VLMFallbackMenuIcon(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
         if (@available(iOS 13.0, *)) {
-            UIImage *system = [UIImage systemImageNamed:@"ellipsis.circle"];
+            UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:17.0 weight:UIImageSymbolWeightMedium scale:UIImageSymbolScaleMedium];
+            UIImage *system = [UIImage systemImageNamed:@"ellipsis.circle" withConfiguration:config];
             if (!system) {
-                system = [UIImage systemImageNamed:@"circle"];
+                system = [UIImage systemImageNamed:@"circle" withConfiguration:config];
             }
             icon = [system imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
         }
@@ -706,25 +800,25 @@ static UIImage *VLMFallbackMenuIcon(void) {
     return icon;
 }
 
-static UIImageView *VLMEnsureFallbackIconView(UIView *content, UIColor *tint) {
-    UIImageView *iv = objc_getAssociatedObject(content, kVLMFallbackIconKey);
-    if (!iv) {
-        iv = [[UIImageView alloc] init];
-        iv.contentMode = UIViewContentModeScaleAspectFit;
-        objc_setAssociatedObject(content, kVLMFallbackIconKey, iv, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [content addSubview:iv];
+static UIImageView *VLMEnsureIconSlot(UIView *content) {
+    UIImageView *slot = objc_getAssociatedObject(content, kVLMFallbackIconKey);
+    if (!slot) {
+        slot = [[UIImageView alloc] init];
+        slot.userInteractionEnabled = NO;
+        slot.contentMode = UIViewContentModeScaleAspectFit;
+        objc_setAssociatedObject(content, kVLMFallbackIconKey, slot, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    iv.image = VLMFallbackMenuIcon();
-    iv.hidden = NO;
-    iv.alpha = 1;
-    iv.tintColor = tint ?: UIColor.labelColor;
-    return iv;
+    if (slot.superview != content) {
+        [content addSubview:slot];
+    }
+    [content bringSubviewToFront:slot];
+    return slot;
 }
 
 static void VLMRelayoutCell(UIView *cell) {
     CGFloat width = cell.bounds.size.width;
     CGFloat height = cell.bounds.size.height;
-    if (width < 80.0 || height < 8.0) {
+    if (width < 8.0 || height < 8.0) {
         return;
     }
 
@@ -736,79 +830,72 @@ static void VLMRelayoutCell(UIView *cell) {
     }
     cell.clipsToBounds = NO;
 
+    UIImageView *slot = VLMEnsureIconSlot(content);
+
     NSMutableArray<UILabel *> *labels = [NSMutableArray array];
     NSMutableArray<UIImageView *> *images = [NSMutableArray array];
-    VLMEnumerateLabelsAndImages(content, labels, images);
+    NSMutableArray<UIImage *> *extraImages = [NSMutableArray array];
+    VLMWalkMenuParts(cell, slot, labels, images, extraImages);
 
-    UILabel *title = nil;
-    for (UILabel *label in labels) {
-        if (!title || label.text.length > title.text.length) {
-            title = label;
-        }
+    UILabel *title = VLMBestTitleLabel(labels);
+    if (!title) {
+        title = VLMKVCTitleLabel(cell) ?: VLMKVCTitleLabel(content);
     }
 
-    UIImageView *fallback = objc_getAssociatedObject(content, kVLMFallbackIconKey);
-    UIImageView *imageView = nil;
+    UIImage *nativeImage = nil;
+    UIColor *nativeTint = nil;
+    BOOL nativeOriginal = NO;
     for (UIImageView *candidate in images) {
-        if (candidate == fallback) {
+        if (candidate == slot || VLMIsBackgroundImageView(candidate, content)) {
             continue;
         }
-        if (candidate.image) {
-            imageView = candidate;
-            break;
+        if (VLMImageIsUsableIcon(candidate.image) && candidate.alpha >= 0.05) {
+            CGFloat area = candidate.image.size.width * candidate.image.size.height;
+            CGFloat current = nativeImage ? nativeImage.size.width * nativeImage.size.height : -1.0;
+            if (area > current) {
+                nativeImage = candidate.image;
+                nativeTint = candidate.tintColor;
+                nativeOriginal = candidate.image.renderingMode == UIImageRenderingModeAlwaysOriginal;
+            }
         }
+        candidate.hidden = YES;
+        candidate.alpha = 0;
+        VLMDisableConstraints(candidate);
     }
-    if (!imageView) {
-        for (UIImageView *candidate in images) {
-            if (candidate != fallback) {
-                imageView = candidate;
+    if (!nativeImage) {
+        for (UIImage *image in extraImages) {
+            if (VLMImageIsUsableIcon(image)) {
+                nativeImage = image;
+                nativeOriginal = image.renderingMode == UIImageRenderingModeAlwaysOriginal;
                 break;
             }
         }
     }
-
-    for (UIView *sub in content.subviews) {
-        if ([sub isKindOfClass:[UIStackView class]]) {
-            UIStackView *stack = (UIStackView *)sub;
-            stack.axis = UILayoutConstraintAxisHorizontal;
-            stack.alignment = UIStackViewAlignmentCenter;
-            stack.distribution = UIStackViewDistributionFill;
-            stack.spacing = 10;
-            stack.frame = UIEdgeInsetsInsetRect(content.bounds, UIEdgeInsetsMake(0, 12, 0, 12));
+    if (!nativeImage) {
+        UIImage *kvcImage = VLMKVCImage(cell) ?: VLMKVCImage(content);
+        if (VLMImageIsUsableIcon(kvcImage)) {
+            nativeImage = kvcImage;
+            nativeOriginal = kvcImage.renderingMode == UIImageRenderingModeAlwaysOriginal;
         }
     }
 
     CGFloat icon = 22.0;
-    CGFloat left = 14.0;
+    CGFloat left = 16.0;
     CGFloat gap = 10.0;
     CGFloat textX = left + icon + gap;
     UIColor *tint = title.textColor ?: UIColor.labelColor;
-    UIImageView *iconView = nil;
 
-    if (imageView && imageView.image) {
-        if (fallback) {
-            fallback.hidden = YES;
-        }
-        iconView = imageView;
-        VLMDisableConstraints(imageView);
-        imageView.hidden = NO;
-        imageView.alpha = 1;
-        imageView.contentMode = UIViewContentModeScaleAspectFit;
-        if (imageView.image.renderingMode != UIImageRenderingModeAlwaysOriginal) {
-            imageView.tintColor = tint;
-        }
+    slot.hidden = NO;
+    slot.alpha = 1;
+    slot.contentMode = UIViewContentModeScaleAspectFit;
+    if (nativeImage) {
+        slot.image = nativeImage;
+        slot.tintColor = nativeOriginal ? nil : (nativeTint ?: tint);
     } else {
-        if (imageView) {
-            imageView.hidden = YES;
-        }
-        iconView = VLMEnsureFallbackIconView(content, tint);
-        VLMDisableConstraints(iconView);
+        slot.image = VLMFallbackMenuIcon();
+        slot.tintColor = tint;
     }
-
-    if (iconView) {
-        iconView.frame = CGRectMake(left, (height - icon) / 2.0, icon, icon);
-        iconView.contentMode = UIViewContentModeScaleAspectFit;
-    }
+    slot.frame = CGRectMake(left, (content.bounds.size.height - icon) / 2.0, icon, icon);
 
     if (title) {
         VLMDisableConstraints(title);
@@ -817,7 +904,11 @@ static void VLMRelayoutCell(UIView *cell) {
         title.textAlignment = NSTextAlignmentLeft;
         title.numberOfLines = 1;
         title.lineBreakMode = NSLineBreakByTruncatingTail;
-        title.frame = CGRectMake(textX, 0, MAX(40.0, width - textX - 14.0), height);
+        if (title.superview != content) {
+            [title removeFromSuperview];
+            [content insertSubview:title belowSubview:slot];
+        }
+        title.frame = CGRectMake(textX, 0, MAX(40.0, content.bounds.size.width - textX - 14.0), content.bounds.size.height);
     }
 }
 
@@ -979,6 +1070,13 @@ static BOOL VLMIsInsideEditMenu(id view) {
 %hook UICollectionViewCell
 
 - (void)layoutSubviews {
+    %orig;
+    if (VLMEditOn() && VLMIsInsideEditMenu(self)) {
+        VLMRelayoutCell(self);
+    }
+}
+
+- (void)applyLayoutAttributes:(UICollectionViewLayoutAttributes *)layoutAttributes {
     %orig;
     if (VLMEditOn() && VLMIsInsideEditMenu(self)) {
         VLMRelayoutCell(self);
