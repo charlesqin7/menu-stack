@@ -125,6 +125,10 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
 
+## 更新（1.0.12）
+
+- 「粘贴」没有系统图标时也会显示默认图标；剪切/拷贝等已有系统图标的项不改。
+
 ## 更新（1.0.11）
 
 - 有系统图标的项继续显示系统图标，不再被默认 `…` 盖住。

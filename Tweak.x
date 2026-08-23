@@ -750,12 +750,65 @@ static UIImageView *VLMEnsureFallbackSlot(UIView *content) {
         slot.userInteractionEnabled = NO;
         slot.contentMode = UIViewContentModeScaleAspectFit;
         objc_setAssociatedObject(content, kVLMFallbackIconKey, slot, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        [content addSubview:slot];
-    }
-    if (slot.superview != content) {
-        [content addSubview:slot];
     }
     return slot;
+}
+
+static UIButton *VLMFindPrimaryButton(UIView *view, UIView *skip) {
+    if (!view || view == skip) {
+        return nil;
+    }
+    UIButton *best = [view isKindOfClass:[UIButton class]] ? (UIButton *)view : nil;
+    for (UIView *sub in view.subviews) {
+        UIButton *found = VLMFindPrimaryButton(sub, skip);
+        if (!found) {
+            continue;
+        }
+        if (!best || (found.bounds.size.width * found.bounds.size.height > best.bounds.size.width * best.bounds.size.height)) {
+            best = found;
+        }
+    }
+    return best;
+}
+
+static BOOL VLMButtonHasImage(UIButton *button) {
+    if (!button) {
+        return NO;
+    }
+    if (VLMImageIsUsableIcon(button.currentImage) || VLMImageIsUsableIcon(button.imageView.image)) {
+        return YES;
+    }
+    if (@available(iOS 15.0, *)) {
+        if (VLMImageIsUsableIcon(button.configuration.image)) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static void VLMApplyFallbackImageToButton(UIButton *button, UIColor *tint) {
+    UIImage *fallback = VLMFallbackMenuIcon();
+    if (!button || !fallback) {
+        return;
+    }
+    if (@available(iOS 15.0, *)) {
+        UIButtonConfiguration *config = button.configuration;
+        if (config && !VLMImageIsUsableIcon(config.image)) {
+            UIButtonConfiguration *updated = [config copy];
+            updated.image = fallback;
+            updated.imagePlacement = UIButtonConfigurationPlacementLeading;
+            if (updated.imagePadding < 8.0) {
+                updated.imagePadding = 10.0;
+            }
+            button.configuration = updated;
+            button.tintColor = tint ?: UIColor.labelColor;
+            return;
+        }
+    }
+    if (!VLMImageIsUsableIcon(button.currentImage)) {
+        [button setImage:fallback forState:UIControlStateNormal];
+        button.tintColor = tint ?: UIColor.labelColor;
+    }
 }
 
 static void VLMSetFrameFromContent(UIView *view, UIView *content, CGRect rectInContent) {
@@ -811,7 +864,22 @@ static void VLMRelayoutCell(UIView *cell) {
     NSMutableArray<UIImageView *> *images = [NSMutableArray array];
     VLMWalkMenuParts(cell, slot, labels, images);
 
+    UIButton *button = VLMFindPrimaryButton(cell, slot);
     UILabel *title = VLMBestTitleLabel(labels);
+    if (!title && button.titleLabel) {
+        title = button.titleLabel;
+    }
+    UIColor *tint = title.textColor ?: UIColor.labelColor;
+    if (button && !VLMButtonHasImage(button)) {
+        VLMApplyFallbackImageToButton(button, tint);
+        [labels removeAllObjects];
+        [images removeAllObjects];
+        VLMWalkMenuParts(cell, slot, labels, images);
+        if (!title) {
+            title = VLMBestTitleLabel(labels) ?: button.titleLabel;
+        }
+    }
+
     UIImageView *nativeIcon = VLMBestNativeIcon(images, slot, content);
 
     CGFloat icon = 22.0;
@@ -820,7 +888,6 @@ static void VLMRelayoutCell(UIView *cell) {
     CGFloat textX = left + icon + gap;
     CGRect iconRect = CGRectMake(left, (content.bounds.size.height - icon) / 2.0, icon, icon);
     CGRect titleRect = CGRectMake(textX, 0, MAX(40.0, content.bounds.size.width - textX - 14.0), content.bounds.size.height);
-    UIColor *tint = title.textColor ?: UIColor.labelColor;
 
     for (UIImageView *candidate in images) {
         if (candidate == slot || VLMIsBackgroundImageView(candidate, content)) {
@@ -834,24 +901,30 @@ static void VLMRelayoutCell(UIView *cell) {
                 candidate.tintColor = candidate.tintColor ?: tint;
             }
             VLMSetFrameFromContent(candidate, content, iconRect);
+        } else if ([candidate.superview isKindOfClass:[UIButton class]] && !VLMImageIsUsableIcon(candidate.image)) {
+            continue;
         } else {
             candidate.hidden = YES;
             candidate.alpha = 0;
         }
     }
 
-    if (nativeIcon) {
+    if (nativeIcon || VLMButtonHasImage(button)) {
         slot.hidden = YES;
         slot.alpha = 0;
         slot.image = nil;
     } else {
+        UIView *host = button ?: title.superview ?: content;
+        if (slot.superview != host) {
+            [host addSubview:slot];
+        }
         slot.hidden = NO;
         slot.alpha = 1;
         slot.image = VLMFallbackMenuIcon();
         slot.tintColor = tint;
         slot.contentMode = UIViewContentModeScaleAspectFit;
-        slot.frame = iconRect;
-        [content bringSubviewToFront:slot];
+        slot.frame = (host == content) ? iconRect : [content convertRect:iconRect toView:host];
+        [host bringSubviewToFront:slot];
     }
 
     NSString *titleText = title ? VLMTrimmedText(title) : nil;
