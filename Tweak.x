@@ -854,6 +854,40 @@ static UIImageView *VLMBestNativeIcon(NSArray<UIImageView *> *images, UIImageVie
     return best;
 }
 
+static UIButton *VLMEnclosingButton(UIView *view, UIView *stop) {
+    UIView *current = view;
+    while (current && current != stop) {
+        if ([current isKindOfClass:[UIButton class]]) {
+            return (UIButton *)current;
+        }
+        current = current.superview;
+    }
+    return nil;
+}
+
+static void VLMIndentButtonTitle(UIButton *button, UIView *cell, CGFloat textX, CGFloat width) {
+    if (!button) {
+        return;
+    }
+    CGFloat leading = [button convertPoint:CGPointMake(textX, 0) fromView:cell].x;
+    if (leading < 8.0 || leading > width - 40.0) {
+        leading = textX;
+    }
+    if (@available(iOS 15.0, *)) {
+        UIButtonConfiguration *config = button.configuration;
+        if (config) {
+            UIButtonConfiguration *updated = [config copy];
+            NSDirectionalEdgeInsets insets = updated.contentInsets;
+            insets.leading = leading;
+            updated.contentInsets = insets;
+            button.configuration = updated;
+            return;
+        }
+    }
+    button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
+    button.titleEdgeInsets = UIEdgeInsetsMake(0, leading, 0, 8.0);
+}
+
 static void VLMRelayoutCell(UIView *cell) {
     CGFloat width = cell.bounds.size.width;
     CGFloat height = cell.bounds.size.height;
@@ -913,6 +947,14 @@ static void VLMRelayoutCell(UIView *cell) {
         slot.tintColor = tint;
     }
     slot.frame = iconRect;
+
+    BOOL usedFallback = !(nativeIcon && VLMImageIsUsableIcon(nativeIcon.image));
+    if (usedFallback && title) {
+        UIButton *button = VLMEnclosingButton(title, cell);
+        if (button) {
+            VLMIndentButtonTitle(button, cell, textX, width);
+        }
+    }
 
     NSString *titleText = title ? VLMTrimmedText(title) : nil;
     for (UILabel *label in labels) {
