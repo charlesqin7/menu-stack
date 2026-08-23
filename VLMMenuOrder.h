@@ -15,10 +15,10 @@ NSString *_Nullable VLMCatalogIDForTitle(NSString *title);
 NSString *_Nullable VLMCatalogIDForSelectorName(NSString *selectorName);
 NSString *_Nullable VLMCatalogIDForIdentifier(NSString *identifier);
 
-NSArray<NSString *> *VLMSanitizeOrderIDs(id value);
-NSArray<NSString *> *VLMDisplayOrderIDs(id orderValue, id knownValue);
-NSArray<NSString *> *VLMSanitizeHiddenIDs(id value);
-NSArray<NSDictionary *> *VLMSanitizeKnownItems(id value);
+NSArray<NSString *> *VLMSanitizeOrderIDs(id _Nullable value);
+NSArray<NSString *> *VLMDisplayOrderIDs(id _Nullable orderValue, id _Nullable knownValue);
+NSArray<NSString *> *VLMSanitizeHiddenIDs(id _Nullable value);
+NSArray<NSDictionary *> *VLMSanitizeKnownItems(id _Nullable value);
 NSArray<NSDictionary *> *VLMMergedKnownItems(NSArray * _Nullable stored, NSArray * _Nullable extra);
 
 NS_ASSUME_NONNULL_END

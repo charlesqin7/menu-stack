@@ -1324,7 +1324,7 @@ static NSInteger VLMDisplayIndexForItem(UICollectionView *collectionView, NSInte
     return map[originalIndex].integerValue;
 }
 
-static NSArray<NSNumber *> *VLMIndexMapFromPairedIdentities(NSArray *primary, NSArray *secondary);
+static NSArray<NSNumber *> *VLMIndexMapFromPairedIdentities(NSArray *primary, NSArray *_Nullable secondary);
 
 static NSArray<NSNumber *> *VLMIndexMapFromIdentities(NSArray *identities) {
     return VLMIndexMapFromPairedIdentities(identities, nil);
