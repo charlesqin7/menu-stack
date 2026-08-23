@@ -29,6 +29,10 @@ static const CGFloat kVLMScreenInset = 16.0;
 static const CGFloat kVLMSelectionGap = 6.0;
 static const CGFloat kVLMIconSize = 22.0;
 static const CGFloat kVLMIconLeft = 16.0;
+// iOS 16.5 keeps a 22pt gutter for _UIEditMenuPageButton when the
+// copy-mode bar has multiple pages. Edit mode often has no gutter, so
+// rows would sit 22pt closer to the platter edge unless we compensate.
+static const CGFloat kVLMPageGutter = 22.0;
 static const CGFloat kVLMIconTextGap = 10.0;
 static const CGFloat kVLMArrowWidth = 20.0;
 static const CGFloat kVLMArrowHeight = 11.0;
@@ -1033,17 +1037,25 @@ static UICollectionViewLayout *VLMEnsureVerticalListLayout(UICollectionView *col
 }
 
 static void VLMExpandCollectionChain(UIView *host, UICollectionView *collectionView) {
-    UIView *current = collectionView.superview;
-    for (NSInteger depth = 0; current && current != host && depth < 6; depth++) {
+    UIView *current = collectionView;
+    for (NSInteger depth = 0; current && current != host && depth < 8; depth++) {
         UIView *parent = current.superview;
         if (!parent) {
             break;
         }
+        NSString *name = NSStringFromClass(current.class);
         BOOL managedByEffectView = [current isKindOfClass:[UIVisualEffectView class]]
-            || [NSStringFromClass(current.class) containsString:@"Backdrop"];
-        if (!managedByEffectView && !VLMFramesClose(current.frame, parent.bounds)) {
-            VLMDisableConstraints(current);
-            current.frame = parent.bounds;
+            || [name containsString:@"Backdrop"]
+            || [name containsString:@"Shadow"];
+        if (!managedByEffectView) {
+            CGRect target = (parent == host) ? host.bounds : [parent convertRect:host.bounds fromView:host];
+            if (target.size.width < 8.0 || target.size.height < 8.0) {
+                target = parent.bounds;
+            }
+            if (!VLMFramesClose(current.frame, target)) {
+                VLMDisableConstraints(current);
+                current.frame = target;
+            }
         }
         current = parent;
     }
@@ -1124,7 +1136,13 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     collectionView.layer.cornerRadius = 14.0;
     VLMExpandCollectionChain(host, collectionView);
     UIView *chainParent = collectionView.superview;
-    CGRect targetFrame = chainParent && chainParent != host ? chainParent.bounds : host.bounds;
+    CGRect targetFrame = host.bounds;
+    if (chainParent && chainParent != host) {
+        targetFrame = [chainParent convertRect:host.bounds fromView:host];
+        if (targetFrame.size.width < 8.0 || targetFrame.size.height < 8.0) {
+            targetFrame = chainParent.bounds;
+        }
+    }
     if (!VLMFramesClose(collectionView.frame, targetFrame)) {
         collectionView.frame = targetFrame;
     }
@@ -1310,6 +1328,48 @@ static UIView *VLMEnclosingCollectionCell(UIView *view) {
     return nil;
 }
 
+static UIView *VLMEnclosingEditMenuList(UIView *view) {
+    static Class listClass;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        listClass = objc_getClass("_UIEditMenuListView");
+    });
+    if (!listClass) {
+        return nil;
+    }
+    UIView *current = view;
+    for (NSInteger depth = 0; current && depth < 16; depth++) {
+        if ([current isKindOfClass:listClass]) {
+            return current;
+        }
+        current = current.superview;
+    }
+    return nil;
+}
+
+// Place the icon so its left edge is always page-gutter + icon inset
+// from the list platter, whether or not UIKit reserved space for the
+// hidden page buttons. Copy mode (wrapper at x=22) keeps icon-at-16;
+// edit mode (flush) shifts the icon by that same 22pt.
+static CGFloat VLMAlignedIconLeft(UIView *cell) {
+    UIView *list = VLMEnclosingEditMenuList(cell);
+    if (!list) {
+        return kVLMIconLeft + kVLMPageGutter;
+    }
+    CGFloat cellMinX = [cell convertPoint:CGPointZero toView:list].x;
+    if (cellMinX != cellMinX || fabs(cellMinX) > 500.0) {
+        return kVLMIconLeft + kVLMPageGutter;
+    }
+    CGFloat iconLeft = (kVLMPageGutter + kVLMIconLeft) - cellMinX;
+    if (iconLeft < 8.0) {
+        return 8.0;
+    }
+    if (iconLeft > 48.0) {
+        return 48.0;
+    }
+    return iconLeft;
+}
+
 static void VLMFadeNativeLabels(UIView *view, UIView *skipA, UIView *skipB) {
     if (!view || view == skipA || view == skipB) {
         return;
@@ -1493,8 +1553,16 @@ static void VLMRelayoutCell(UIView *cell) {
     }
     UIColor *iconTint = VLMBestIconTint(images, slot, content, tint);
 
-    CGFloat textX = kVLMIconLeft + kVLMIconSize + kVLMIconTextGap;
-    CGRect iconRect = CGRectMake(kVLMIconLeft, (content.bounds.size.height - kVLMIconSize) / 2.0, kVLMIconSize, kVLMIconSize);
+    if (@available(iOS 11.0, *)) {
+        cell.insetsLayoutMarginsFromSafeArea = NO;
+        content.insetsLayoutMarginsFromSafeArea = NO;
+    }
+    cell.layoutMargins = UIEdgeInsetsZero;
+    content.layoutMargins = UIEdgeInsetsZero;
+
+    CGFloat iconLeft = VLMAlignedIconLeft(cell);
+    CGFloat textX = iconLeft + kVLMIconSize + kVLMIconTextGap;
+    CGRect iconRect = CGRectMake(iconLeft, (content.bounds.size.height - kVLMIconSize) / 2.0, kVLMIconSize, kVLMIconSize);
     CGRect titleRect = CGRectMake(textX, 0, MAX(40.0, content.bounds.size.width - textX - 14.0), content.bounds.size.height);
 
     objc_setAssociatedObject(cell, kVLMTitleOverlayActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
