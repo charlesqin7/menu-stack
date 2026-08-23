@@ -8,7 +8,7 @@
 extern char **environ;
 
 #ifndef VLM_VERSION
-#define VLM_VERSION "1.0.42"
+#define VLM_VERSION "1.0.43"
 #endif
 
 @interface VLMMenuListController : UIViewController

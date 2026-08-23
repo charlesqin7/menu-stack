@@ -1,6 +1,7 @@
 #import "VLMMenuListController.h"
 #import "VLMOrderListController.h"
 #import "../VLMMenuOrder.h"
+#import <CoreFoundation/CoreFoundation.h>
 
 @implementation VLMMenuListController {
     UITableView *_tableView;
@@ -41,6 +42,19 @@
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
     [self reloadFromPrefs];
+    CFNotificationCenterPostNotification(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        (__bridge CFStringRef)VLMIncomingNotificationName,
+        NULL,
+        NULL,
+        true
+    );
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(),
+                   ^{
+        [weakSelf reloadFromPrefs];
+    });
 }
 
 - (void)toggleEditing {

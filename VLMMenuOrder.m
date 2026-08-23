@@ -2,6 +2,8 @@
 
 #import <dlfcn.h>
 #import <glob.h>
+#import <objc/message.h>
+#import <objc/runtime.h>
 #import <sys/stat.h>
 #import <unistd.h>
 
@@ -107,15 +109,99 @@ static NSArray<NSString *> *VLMIncomingPlistPaths(void) {
         "/tmp/com.qins.verticalmenu.incoming*.plist",
         "/var/jb/var/tmp/com.qins.verticalmenu.incoming*.plist",
         "/var/jb/Library/Application Support/VerticalMenu/inbox/*.plist",
+        "/var/mobile/Library/VerticalMenu/inbox/*.plist",
         "/var/mobile/Containers/Data/Application/*/tmp/com.qins.verticalmenu.incoming.plist",
         "/var/mobile/Containers/Data/Application/*/tmp/VerticalMenu-incoming.plist",
         "/private/var/mobile/Containers/Data/Application/*/tmp/com.qins.verticalmenu.incoming.plist",
         "/private/var/mobile/Containers/Data/Application/*/tmp/VerticalMenu-incoming.plist",
+        "/var/mobile/Containers/Data/Application/*/Library/Caches/tmp/com.qins.verticalmenu.incoming.plist",
+        "/var/mobile/Containers/Data/Application/*/Library/Caches/tmp/VerticalMenu-incoming.plist",
+        "/private/var/mobile/Containers/Data/Application/*/Library/Caches/tmp/com.qins.verticalmenu.incoming.plist",
+        "/private/var/mobile/Containers/Data/Application/*/Library/Caches/tmp/VerticalMenu-incoming.plist",
+        "/var/mobile/Containers/Data/Application/*/Library/Caches/TemporaryItems/com.qins.verticalmenu.incoming.plist",
+        "/var/mobile/Containers/Data/Application/*/Library/Caches/TemporaryItems/VerticalMenu-incoming.plist",
         "/var/mobile/Containers/Data/Application/*/Library/Preferences/com.qins.verticalmenu.incoming.plist",
+        "/private/var/mobile/Containers/Data/Application/*/Library/Preferences/com.qins.verticalmenu.incoming.plist",
         NULL,
     };
     for (const char **pattern = patterns; *pattern; pattern++) {
         VLMAddGlobMatches(paths, *pattern);
+    }
+    return paths;
+}
+
+static NSArray<NSString *> *VLMIncomingRelativeNames(void) {
+    return @[
+        @"tmp/com.qins.verticalmenu.incoming.plist",
+        @"tmp/VerticalMenu-incoming.plist",
+        @"Library/Caches/tmp/com.qins.verticalmenu.incoming.plist",
+        @"Library/Caches/tmp/VerticalMenu-incoming.plist",
+        @"Library/Caches/TemporaryItems/com.qins.verticalmenu.incoming.plist",
+        @"Library/Caches/TemporaryItems/VerticalMenu-incoming.plist",
+        @"Library/Preferences/com.qins.verticalmenu.incoming.plist",
+        @"Library/Preferences/VerticalMenu-incoming.plist",
+    ];
+}
+
+static NSArray<NSString *> *VLMAppDataContainerRoots(void) {
+    NSMutableArray<NSString *> *roots = [NSMutableArray array];
+    Class workspaceClass = objc_getClass("LSApplicationWorkspace");
+    if (!workspaceClass) {
+        return roots;
+    }
+    SEL defaultSel = sel_registerName("defaultWorkspace");
+    SEL allSel = sel_registerName("allApplications");
+    SEL dataSel = sel_registerName("dataContainerURL");
+    if (![workspaceClass respondsToSelector:defaultSel]) {
+        return roots;
+    }
+    id workspace = ((id (*)(id, SEL))objc_msgSend)(workspaceClass, defaultSel);
+    if (!workspace || ![workspace respondsToSelector:allSel]) {
+        return roots;
+    }
+    NSArray *apps = ((id (*)(id, SEL))objc_msgSend)(workspace, allSel);
+    if (![apps isKindOfClass:[NSArray class]]) {
+        return roots;
+    }
+    for (id proxy in apps) {
+        if (![proxy respondsToSelector:dataSel]) {
+            continue;
+        }
+        NSURL *url = ((id (*)(id, SEL))objc_msgSend)(proxy, dataSel);
+        if (![url isKindOfClass:[NSURL class]] || url.path.length == 0) {
+            continue;
+        }
+        if (![roots containsObject:url.path]) {
+            [roots addObject:url.path];
+        }
+    }
+    return roots;
+}
+
+static NSArray<NSString *> *VLMIncomingPlistsInAppContainers(void) {
+    if (!VLMIsSpringBoardProcess()) {
+        return @[];
+    }
+    NSMutableArray<NSString *> *paths = [NSMutableArray array];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray<NSString *> *relatives = VLMIncomingRelativeNames();
+    for (NSString *root in VLMAppDataContainerRoots()) {
+        for (NSString *relative in relatives) {
+            NSString *path = [root stringByAppendingPathComponent:relative];
+            if ([fm fileExistsAtPath:path] && ![paths containsObject:path]) {
+                [paths addObject:path];
+            }
+        }
+    }
+    return paths;
+}
+
+static NSArray<NSString *> *VLMIncomingPlistPathsForIngest(void) {
+    NSMutableArray<NSString *> *paths = [VLMIncomingPlistPaths() mutableCopy] ?: [NSMutableArray array];
+    for (NSString *path in VLMIncomingPlistsInAppContainers()) {
+        if (![paths containsObject:path]) {
+            [paths addObject:path];
+        }
     }
     return paths;
 }
@@ -421,6 +507,11 @@ void VLMStartPrefsWriterIfNeeded(void) {
             CFMessagePortSetDispatchQueue(port, dispatch_get_main_queue());
         }
         VLMStartIncomingObserverIfNeeded();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(),
+                       ^{
+            VLMIngestIncomingPrefs();
+        });
     });
 }
 
@@ -439,10 +530,32 @@ static BOOL VLMSendPrefsToSpringBoard(NSDictionary<NSString *, id> *changes) {
                                                                error:&error];
     SInt32 status = kCFMessagePortIsInvalid;
     if (data) {
-        status = CFMessagePortSendRequest(remote, 1, (__bridge CFDataRef)data, 2.0, 0, NULL, NULL);
+        status = CFMessagePortSendRequest(remote, 1, (__bridge CFDataRef)data, 0.15, 0, NULL, NULL);
     }
     CFRelease(remote);
     return status == kCFMessagePortSuccess;
+}
+
+static BOOL VLMWriteIncomingData(NSData *data, NSString *directory) {
+    if (!data || directory.length == 0) {
+        return NO;
+    }
+    NSFileManager *fm = [NSFileManager defaultManager];
+    BOOL isDirectory = NO;
+    if (![fm fileExistsAtPath:directory isDirectory:&isDirectory] || !isDirectory) {
+        [fm createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:@{
+            NSFilePosixPermissions: @0777
+        } error:nil];
+    }
+    BOOL wrote = NO;
+    for (NSString *name in @[@"com.qins.verticalmenu.incoming.plist", @"VerticalMenu-incoming.plist"]) {
+        NSString *path = [directory stringByAppendingPathComponent:name];
+        if ([data writeToFile:path atomically:YES]) {
+            chmod(path.fileSystemRepresentation, 0666);
+            wrote = YES;
+        }
+    }
+    return wrote;
 }
 
 static BOOL VLMDropIncomingPrefs(NSDictionary<NSString *, id> *changes) {
@@ -457,34 +570,25 @@ static BOOL VLMDropIncomingPrefs(NSDictionary<NSString *, id> *changes) {
     if (!data) {
         return NO;
     }
-    BOOL wrote = NO;
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSArray<NSString *> *names = @[
-        @"com.qins.verticalmenu.incoming.plist",
-        @"VerticalMenu-incoming.plist",
-    ];
+
+    NSString *tmp = NSTemporaryDirectory();
+    BOOL sandboxWrote = VLMWriteIncomingData(data, tmp);
+    sandboxWrote = VLMWriteIncomingData(data, [NSHomeDirectory() stringByAppendingPathComponent:@"tmp"]) || sandboxWrote;
+    sandboxWrote = VLMWriteIncomingData(data, [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches/tmp"]) || sandboxWrote;
+    sandboxWrote = VLMWriteIncomingData(data, [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences"]) || sandboxWrote;
+
+    BOOL sharedWrote = NO;
     for (NSString *directory in VLMIncomingDirectories()) {
-        BOOL isDirectory = NO;
-        if (![fm fileExistsAtPath:directory isDirectory:&isDirectory] || !isDirectory) {
-            [fm createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:@{
-                NSFilePosixPermissions: @0777
-            } error:nil];
+        if ([directory isEqualToString:tmp]
+            || [directory isEqualToString:[NSHomeDirectory() stringByAppendingPathComponent:@"tmp"]]
+            || [directory isEqualToString:[NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences"]]) {
+            continue;
         }
-        for (NSString *name in names) {
-            NSString *path = [directory stringByAppendingPathComponent:name];
-            if ([data writeToFile:path atomically:YES]) {
-                chmod(path.fileSystemRepresentation, 0666);
-                wrote = YES;
-            }
+        if (VLMWriteIncomingData(data, directory)) {
+            sharedWrote = YES;
         }
     }
-    @try {
-        [[NSDistributedNotificationCenter defaultCenter] postNotificationName:@"com.qins.verticalmenu.incoming"
-                                                                       object:VLMCurrentBundleID()
-                                                                     userInfo:changes
-                                                           deliverImmediately:YES];
-    } @catch (__unused NSException *exception) {
-    }
+
     CFNotificationCenterPostNotification(
         CFNotificationCenterGetDarwinNotifyCenter(),
         (__bridge CFStringRef)VLMIncomingNotificationName,
@@ -492,9 +596,19 @@ static BOOL VLMDropIncomingPrefs(NSDictionary<NSString *, id> *changes) {
         NULL,
         true
     );
-    NSLog(@"[VerticalMenu] prefs drop sandbox=%d tmp=%@ bundle=%@",
-          wrote, NSTemporaryDirectory(), VLMCurrentBundleID());
-    return wrote;
+    NSString *bundle = VLMCurrentBundleID();
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        @try {
+            [[NSDistributedNotificationCenter defaultCenter] postNotificationName:@"com.qins.verticalmenu.incoming"
+                                                                           object:bundle
+                                                                         userInfo:nil
+                                                               deliverImmediately:YES];
+        } @catch (__unused NSException *exception) {
+        }
+    });
+    NSLog(@"[VerticalMenu] prefs drop sandbox=%d shared=%d tmp=%@ bundle=%@",
+          sandboxWrote, sharedWrote, tmp, bundle);
+    return sandboxWrote || sharedWrote;
 }
 
 static NSArray *VLMDiskOnlyProfiles(void) {
@@ -523,19 +637,35 @@ void VLMIngestIncomingPrefs(void) {
     if (!VLMIsSpringBoardProcess() && !VLMCurrentProcessIsPreferences()) {
         return;
     }
-    NSArray<NSString *> *paths = VLMIncomingPlistPaths();
+    NSArray<NSString *> *paths = VLMIncomingPlistPathsForIngest();
     if (paths.count == 0) {
         return;
     }
+    NSLog(@"[VerticalMenu] ingest paths=%lu sb=%d",
+          (unsigned long)paths.count, VLMIsSpringBoardProcess());
     gApplyingRemotePrefs = YES;
+    NSMutableArray<NSDictionary *> *incoming = [NSMutableArray array];
+    for (NSString *path in paths) {
+        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
+        if (dict.count > 0) {
+            [incoming addObject:dict];
+        }
+    }
     NSDictionary *merged = VLMReadPrefsDictionary();
+    NSArray *profiles = VLMMergedProfilesFromSources((incoming.count > 0)
+        ? [@[merged] arrayByAddingObjectsFromArray:incoming]
+        : @[merged]);
+    BOOL wrote = NO;
     gReplaceProfiles = YES;
-    if (merged[VLMMenuProfilesKey]) {
-        VLMWritePrefsValues(@{VLMMenuProfilesKey: merged[VLMMenuProfilesKey]}, YES);
+    if (profiles.count > 0) {
+        VLMWritePrefsValues(@{VLMMenuProfilesKey: profiles}, YES);
+        wrote = YES;
     }
     gReplaceProfiles = NO;
-    for (NSString *path in paths) {
-        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+    if (wrote) {
+        for (NSString *path in paths) {
+            [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+        }
     }
     gApplyingRemotePrefs = NO;
 }
@@ -578,8 +708,12 @@ void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp) 
     BOOL ported = NO;
     BOOL needsHandoff = !wroteFile || (!VLMIsSpringBoardProcess() && !VLMCurrentProcessIsPreferences());
     if (needsHandoff && !gApplyingRemotePrefs) {
-        ported = VLMSendPrefsToSpringBoard(changes);
         dropped = VLMDropIncomingPrefs(changes);
+        NSDictionary *portPayload = [changes copy];
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            VLMSendPrefsToSpringBoard(portPayload);
+        });
+        ported = YES;
     }
     NSLog(@"[VerticalMenu] prefs persist file=%d port=%d drop=%d profiles=%lu in %@",
           wroteFile, ported, dropped,

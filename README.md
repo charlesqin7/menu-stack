@@ -131,6 +131,13 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
 
+## 更新（1.0.43）
+
+- 弹出菜单后卡死：1.0.42 在滚动/布局时强制改毛玻璃和翻页按钮的 frame，和系统布局互相顶，形成死循环。改为只在毛玻璃自己上面做圆角遮罩，滚动结束再修一次，并且菜单记录推迟到下一拍再写，不再在布局里做跨进程通信。
+- 滑动后右边灰条：系统仍会把原来约 347pt 宽的 `UIVisualEffectView` 加回来，祖先 `clipsToBounds` 裁不住这块毛玻璃。改为给毛玻璃设置 `maskView`，按 250pt 托盘裁切。
+- 菜单超出安全区：纵向高度 252pt 仍沿用横条的原点，并且第一次还没落位就把 setup 标成完成。改为贴选区后按安全区和键盘顶部钳位，未落位前会再试一次。
+- X 仍不出现在设置里：记录会写到和层级日志同一份可写的沙盒 tmp。SpringBoard 不再只靠 glob，而是用 `LSApplicationProxy` 的 `dataContainerURL` 去 `tmp/`、`Library/Caches/tmp/` 等路径精确读取后再写入全局配置。打开「按菜单设置」时会再通知 SpringBoard 收一次。装完请 **respring**，划掉 X 再选一次字。
+
 ## 更新（1.0.42）
 
 - X 仍不出现在设置里：日志证明采集成功，但记录只写在 X 自己的 tmp，设置读不到。改为写进 App 沙盒 tmp（已验证可写），SpringBoard 再按容器扫描合并；同时用分布式通知把菜单列表发给 SpringBoard。
