@@ -82,30 +82,21 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
 
 - (void)reloadFromPrefs {
     NSDictionary *prefs = [self prefsDictionary];
-    _order = [VLMSanitizeOrderIDs(prefs[VLMMenuOrderKey]) mutableCopy];
+    _order = [VLMDisplayOrderIDs(prefs[VLMMenuOrderKey], prefs[VLMKnownItemsKey]) mutableCopy];
     _hidden = [NSMutableSet setWithArray:VLMSanitizeHiddenIDs(prefs[VLMHiddenItemsKey])];
 
     NSMutableDictionary<NSString *, NSString *> *labels = [NSMutableDictionary dictionary];
-    for (NSString *itemID in VLMDefaultOrderIDs()) {
+    for (NSString *itemID in _order) {
         labels[itemID] = VLMLabelForItemID(itemID);
     }
-    id known = prefs[VLMKnownItemsKey];
-    if ([known isKindOfClass:[NSArray class]]) {
-        for (id item in (NSArray *)known) {
-            if (![item isKindOfClass:[NSDictionary class]]) {
-                continue;
-            }
-            NSString *itemID = item[@"id"];
-            NSString *title = item[@"title"] ?: item[@"label"];
-            if (itemID.length == 0) {
-                continue;
-            }
-            if (![_order containsObject:itemID]) {
-                [_order addObject:itemID];
-            }
-            if (title.length > 0) {
-                labels[itemID] = title;
-            }
+    for (NSDictionary *item in VLMSanitizeKnownItems(prefs[VLMKnownItemsKey])) {
+        NSString *itemID = item[@"id"];
+        NSString *title = item[@"title"] ?: item[@"label"];
+        if (itemID.length == 0) {
+            continue;
+        }
+        if (title.length > 0) {
+            labels[itemID] = title;
         }
     }
     _labels = labels;
@@ -172,7 +163,7 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return @"按住右边横条拖动调整顺序。关闭某项右边的开关即可隐藏，隐藏的项不会出现在弹出菜单里。列表包含常用项；弹出过但这里没有的项目，下次打开本页时会补上。改完后请注销或划掉正在用的 App 再打开。";
+    return @"按住右边横条拖动调整顺序。关闭某项右边的开关即可隐藏，隐藏的项不会出现在弹出菜单里。这里只列出系统文本菜单里的常用项（剪切、拷贝、查询、翻译、搜索网页、共享、快速备忘录等）。在 App 里真正弹出过的其它项会自动补上，设置页里的无关菜单不会再出现。改完后请注销或划掉正在用的 App 再打开。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {

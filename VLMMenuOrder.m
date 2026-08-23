@@ -55,37 +55,43 @@ static NSArray<NSDictionary *> *VLMCatalog(void) {
                 @"id": @"lookup",
                 @"label": @"查询",
                 @"titles": @[@"查询", @"查詢", @"Look Up", @"Look up"],
-                @"sels": @[@"_lookup:", @"lookup:"],
+                @"sels": @[@"_lookup:", @"lookup:", @"_lookupDefinition:", @"lookupDefinition:"],
+                @"idents": @[@"lookup", @"com.apple.menu.lookup"],
             },
             @{
                 @"id": @"findSelection",
                 @"label": @"查找所选内容",
-                @"titles": @[@"查找所选内容", @"查找所選內容", @"Find Selection", @"Find Selected"],
-                @"sels": @[@"_findSelected:", @"findSelected:", @"find:"],
+                @"titles": @[@"查找所选内容", @"查找所選內容", @"Find Selection", @"Find Selected", @"Find"],
+                @"sels": @[@"_findSelected:", @"findSelected:", @"find:", @"_find:", @"findInPage:"],
+                @"idents": @[@"findSelection", @"find", @"com.apple.menu.find"],
             },
             @{
                 @"id": @"searchWeb",
                 @"label": @"搜索网页",
                 @"titles": @[@"搜索网页", @"搜尋網頁", @"Search Web", @"Search the Web"],
-                @"sels": @[@"_searchWeb:", @"searchWeb:"],
+                @"sels": @[@"_searchWeb:", @"searchWeb:", @"_searchTheWeb:", @"searchTheWeb:"],
+                @"idents": @[@"searchWeb", @"com.apple.menu.searchTheWeb"],
             },
             @{
                 @"id": @"translate",
                 @"label": @"翻译",
                 @"titles": @[@"翻译", @"翻譯", @"Translate"],
-                @"sels": @[@"_translate:", @"translate:"],
+                @"sels": @[@"_translate:", @"translate:", @"_translateSelection:", @"translateSelection:"],
+                @"idents": @[@"translate", @"com.apple.menu.translate"],
             },
             @{
                 @"id": @"share",
-                @"label": @"分享",
+                @"label": @"共享",
                 @"titles": @[@"分享", @"共享", @"Share"],
-                @"sels": @[@"_share:", @"share:", @"share:"],
+                @"sels": @[@"_share:", @"share:", @"_shareSelection:", @"shareSelection:"],
+                @"idents": @[@"share", @"com.apple.menu.share"],
             },
             @{
                 @"id": @"quickNote",
                 @"label": @"新建快速备忘录",
                 @"titles": @[@"新建快速备忘录", @"新增快速備忘錄", @"New Quick Note", @"Add to Quick Note"],
-                @"sels": @[@"_addToQuickNote:", @"addToQuickNote:"],
+                @"sels": @[@"_addToQuickNote:", @"addToQuickNote:", @"_quickNote:", @"newQuickNote:"],
+                @"idents": @[@"quickNote", @"com.apple.menu.quickNote"],
             },
             @{
                 @"id": @"replace",
@@ -180,12 +186,43 @@ NSArray<NSDictionary *> *VLMCatalogItems(void) {
     return VLMCatalog();
 }
 
-NSArray<NSString *> *VLMDefaultOrderIDs(void) {
-    NSMutableArray<NSString *> *ids = [NSMutableArray array];
-    for (NSDictionary *item in VLMCatalog()) {
-        [ids addObject:item[@"id"]];
+static BOOL VLMIsCatalogID(NSString *itemID) {
+    if (itemID.length == 0) {
+        return NO;
     }
+    for (NSDictionary *item in VLMCatalog()) {
+        if ([item[@"id"] isEqualToString:itemID]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+NSArray<NSString *> *VLMCoreOrderIDs(void) {
+    static NSArray<NSString *> *ids;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        ids = @[
+            @"cut",
+            @"copy",
+            @"paste",
+            @"select",
+            @"selectAll",
+            @"findSelection",
+            @"lookup",
+            @"translate",
+            @"searchWeb",
+            @"share",
+            @"quickNote",
+            @"replace",
+            @"speak",
+        ];
+    });
     return ids;
+}
+
+NSArray<NSString *> *VLMDefaultOrderIDs(void) {
+    return VLMCoreOrderIDs();
 }
 
 NSString *VLMLabelForItemID(NSString *itemID) {
@@ -248,6 +285,11 @@ NSString *VLMCatalogIDForIdentifier(NSString *identifier) {
         if ([last hasSuffix:[@"." stringByAppendingString:itemID.lowercaseString]]) {
             return itemID;
         }
+        for (NSString *alias in item[@"idents"]) {
+            if ([identifier isEqualToString:alias] || [last isEqualToString:alias.lowercaseString]) {
+                return itemID;
+            }
+        }
     }
     NSString *fromTitle = VLMCatalogIDForTitle(identifier);
     if (fromTitle) {
@@ -256,31 +298,69 @@ NSString *VLMCatalogIDForIdentifier(NSString *identifier) {
     return nil;
 }
 
-NSArray<NSString *> *VLMSanitizeOrderIDs(id value) {
-    if (![value isKindOfClass:[NSArray class]]) {
-        return VLMDefaultOrderIDs();
+static NSString *VLMExtractItemID(id item) {
+    if ([item isKindOfClass:[NSString class]]) {
+        return item;
     }
-    NSMutableArray<NSString *> *ids = [NSMutableArray array];
-    NSMutableSet<NSString *> *seen = [NSMutableSet set];
-    for (id item in (NSArray *)value) {
-        NSString *itemID = nil;
-        if ([item isKindOfClass:[NSString class]]) {
-            itemID = item;
-        } else if ([item isKindOfClass:[NSDictionary class]]) {
-            itemID = item[@"id"];
+    if ([item isKindOfClass:[NSDictionary class]]) {
+        return item[@"id"];
+    }
+    return nil;
+}
+
+static BOOL VLMKnownItemsLookPolluted(NSArray *stored) {
+    if (stored.count == 0) {
+        return NO;
+    }
+    NSInteger catalogHits = 0;
+    for (id item in stored) {
+        if (VLMIsCatalogID(VLMExtractItemID(item))) {
+            catalogHits += 1;
         }
-        if (itemID.length == 0 || [seen containsObject:itemID]) {
+    }
+    return catalogHits >= (NSInteger)VLMCatalog().count - 1;
+}
+
+NSArray<NSString *> *VLMDisplayOrderIDs(id orderValue, id knownValue) {
+    NSArray<NSString *> *core = VLMCoreOrderIDs();
+    NSMutableSet<NSString *> *allowed = [NSMutableSet setWithArray:core];
+    NSMutableArray<NSString *> *knownIDs = [NSMutableArray array];
+    for (NSDictionary *item in VLMSanitizeKnownItems(knownValue)) {
+        NSString *itemID = item[@"id"];
+        if (itemID.length == 0) {
             continue;
         }
-        [seen addObject:itemID];
-        [ids addObject:itemID];
+        [allowed addObject:itemID];
+        [knownIDs addObject:itemID];
     }
-    for (NSString *itemID in VLMDefaultOrderIDs()) {
+
+    NSMutableArray<NSString *> *ids = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    if ([orderValue isKindOfClass:[NSArray class]]) {
+        for (id item in (NSArray *)orderValue) {
+            NSString *itemID = VLMExtractItemID(item);
+            if (itemID.length == 0 || [seen containsObject:itemID] || ![allowed containsObject:itemID]) {
+                continue;
+            }
+            [seen addObject:itemID];
+            [ids addObject:itemID];
+        }
+    }
+    for (NSString *itemID in core) {
+        if (![seen containsObject:itemID]) {
+            [ids addObject:itemID];
+        }
+    }
+    for (NSString *itemID in knownIDs) {
         if (![seen containsObject:itemID]) {
             [ids addObject:itemID];
         }
     }
     return ids;
+}
+
+NSArray<NSString *> *VLMSanitizeOrderIDs(id value) {
+    return VLMDisplayOrderIDs(value, nil);
 }
 
 NSArray<NSString *> *VLMSanitizeHiddenIDs(id value) {
@@ -290,12 +370,7 @@ NSArray<NSString *> *VLMSanitizeHiddenIDs(id value) {
     NSMutableArray<NSString *> *ids = [NSMutableArray array];
     NSMutableSet<NSString *> *seen = [NSMutableSet set];
     for (id item in (NSArray *)value) {
-        NSString *itemID = nil;
-        if ([item isKindOfClass:[NSString class]]) {
-            itemID = item;
-        } else if ([item isKindOfClass:[NSDictionary class]]) {
-            itemID = item[@"id"];
-        }
+        NSString *itemID = VLMExtractItemID(item);
         if (itemID.length == 0 || [seen containsObject:itemID]) {
             continue;
         }
@@ -305,38 +380,51 @@ NSArray<NSString *> *VLMSanitizeHiddenIDs(id value) {
     return ids;
 }
 
+static void VLMAppendKnownItem(NSMutableArray<NSDictionary *> *result, NSMutableSet<NSString *> *seen, id item) {
+    NSString *itemID = nil;
+    NSString *title = nil;
+    if ([item isKindOfClass:[NSDictionary class]]) {
+        itemID = item[@"id"];
+        title = item[@"title"] ?: item[@"label"];
+    } else if ([item isKindOfClass:[NSString class]]) {
+        itemID = VLMCatalogIDForTitle(item) ?: [@"custom:" stringByAppendingString:item];
+        title = item;
+    }
+    if (itemID.length == 0 || [seen containsObject:itemID]) {
+        return;
+    }
+    [seen addObject:itemID];
+    [result addObject:@{
+        @"id": itemID,
+        @"title": title.length ? title : (VLMLabelForItemID(itemID) ?: itemID),
+    }];
+}
+
+NSArray<NSDictionary *> *VLMSanitizeKnownItems(id value) {
+    if (![value isKindOfClass:[NSArray class]] || VLMKnownItemsLookPolluted(value)) {
+        return @[];
+    }
+    NSMutableArray<NSDictionary *> *result = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    NSSet<NSString *> *core = [NSSet setWithArray:VLMCoreOrderIDs()];
+    for (id item in (NSArray *)value) {
+        NSString *itemID = VLMExtractItemID(item);
+        if ([core containsObject:itemID]) {
+            continue;
+        }
+        VLMAppendKnownItem(result, seen, item);
+    }
+    return result;
+}
+
 NSArray<NSDictionary *> *VLMMergedKnownItems(NSArray *stored, NSArray *extra) {
     NSMutableArray<NSDictionary *> *result = [NSMutableArray array];
     NSMutableSet<NSString *> *seen = [NSMutableSet set];
-
-    void (^append)(id) = ^(id item) {
-        NSString *itemID = nil;
-        NSString *title = nil;
-        if ([item isKindOfClass:[NSDictionary class]]) {
-            itemID = item[@"id"];
-            title = item[@"title"] ?: item[@"label"];
-        } else if ([item isKindOfClass:[NSString class]]) {
-            itemID = VLMCatalogIDForTitle(item) ?: [@"custom:" stringByAppendingString:item];
-            title = item;
-        }
-        if (itemID.length == 0 || [seen containsObject:itemID]) {
-            return;
-        }
-        [seen addObject:itemID];
-        [result addObject:@{
-            @"id": itemID,
-            @"title": title.length ? title : (VLMLabelForItemID(itemID) ?: itemID),
-        }];
-    };
-
-    for (NSDictionary *item in VLMCatalog()) {
-        append(@{@"id": item[@"id"], @"title": item[@"label"]});
-    }
-    for (id item in stored) {
-        append(item);
+    for (id item in VLMSanitizeKnownItems(stored)) {
+        VLMAppendKnownItem(result, seen, item);
     }
     for (id item in extra) {
-        append(item);
+        VLMAppendKnownItem(result, seen, item);
     }
     return result;
 }
