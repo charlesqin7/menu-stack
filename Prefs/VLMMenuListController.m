@@ -100,7 +100,6 @@
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:identifier];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
-    NSDictionary *profile = _profiles[indexPath.row];
     cell.textLabel.text = _profileTitles[indexPath.row];
     cell.detailTextLabel.text = _profileSubtitles[indexPath.row];
     cell.detailTextLabel.numberOfLines = 2;
