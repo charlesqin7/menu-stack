@@ -99,6 +99,7 @@ static const void *kVLMGrowDownKey = &kVLMGrowDownKey;
 static const void *kVLMFallbackIconKey = &kVLMFallbackIconKey;
 
 static BOOL VLMNameLooksLikeArrow(UIView *view);
+static void VLMDisableConstraints(UIView *view);
 
 static UICollectionView *VLMFindCollectionView(id view) {
     if ([view isKindOfClass:[UICollectionView class]]) {
