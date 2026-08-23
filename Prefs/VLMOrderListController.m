@@ -10,6 +10,8 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
     NSMutableSet<NSString *> *_hidden;
     NSMutableDictionary<NSString *, NSString *> *_labels;
     NSSet<NSString *> *_globalHidden;
+    NSDictionary *_prefsSnapshot;
+    BOOL _customOrder;
 }
 
 - (instancetype)init {
@@ -81,8 +83,6 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
                                                                               style:UIBarButtonItemStylePlain
                                                                              target:self
                                                                              action:@selector(resetOrder)];
-    VLMMigrateToGlobalRulesIfNeeded();
-    [self reloadFromPrefs];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -92,24 +92,25 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
 }
 
 - (NSDictionary *)currentProfile {
-    NSDictionary *prefs = VLMReadPrefsDictionary();
-    return VLMProfileWithID(prefs[VLMMenuProfilesKey], self.profileID);
+    return VLMProfileWithID(_prefsSnapshot[VLMMenuProfilesKey], self.profileID);
 }
 
 - (void)reloadFromPrefs {
+    NSDictionary *prefs = VLMReadPrefsDictionary();
+    _prefsSnapshot = prefs;
     _labels = [NSMutableDictionary dictionary];
     if ([self isGlobal]) {
-        NSDictionary *rule = VLMGlobalRuleForKind(self.globalKind);
-        _order = [VLMGlobalOrderIDs(self.globalKind) mutableCopy];
-        _hidden = [NSMutableSet setWithArray:VLMGlobalHiddenIDs(self.globalKind)];
-        for (NSDictionary *item in VLMGlobalRuleItems(self.globalKind)) {
+        NSDictionary *rule = VLMGlobalRuleForKindInPrefs(prefs, self.globalKind);
+        _order = [rule[@"order"] mutableCopy] ?: [NSMutableArray array];
+        _hidden = [NSMutableSet setWithArray:rule[@"hidden"] ?: @[]];
+        _customOrder = [rule[@"customOrder"] boolValue];
+        for (NSDictionary *item in rule[@"items"] ?: @[]) {
             NSString *itemID = item[@"id"];
             NSString *title = item[@"title"] ?: VLMLabelForItemID(itemID);
             if (itemID.length > 0 && title.length > 0) {
                 _labels[itemID] = title;
             }
         }
-        (void)rule;
         _globalHidden = [NSSet set];
     } else {
         NSDictionary *profile = [self currentProfile];
@@ -123,7 +124,9 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
             }
         }
         NSString *kind = profile[@"kind"] ?: VLMMenuKindEdit;
-        _globalHidden = [NSSet setWithArray:VLMGlobalHiddenIDs(kind)];
+        NSDictionary *globalRule = VLMGlobalRuleForKindInPrefs(prefs, kind);
+        _globalHidden = [NSSet setWithArray:globalRule[@"hidden"] ?: @[]];
+        _customOrder = VLMProfileCustomOrder(profile);
     }
     for (NSString *itemID in _order) {
         if (!_labels[itemID]) {
@@ -134,6 +137,9 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
 }
 
 - (void)writePrefsAndEnableCustomSort:(BOOL)enableCustomSort {
+    if (enableCustomSort) {
+        _customOrder = YES;
+    }
     if ([self isGlobal]) {
         NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
         for (NSString *itemID in _order) {
@@ -142,30 +148,30 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
                 @"title": _labels[itemID] ?: VLMLabelForItemID(itemID) ?: itemID,
             }];
         }
-        VLMWriteGlobalRule(self.globalKind, _order, _hidden.allObjects, items, enableCustomSort || VLMGlobalCustomOrder(self.globalKind));
+        VLMWriteGlobalRuleAsync(self.globalKind, _order, _hidden.allObjects, items, _customOrder);
         return;
     }
-    NSDictionary *prefs = VLMReadPrefsDictionary();
-    NSDictionary *existing = VLMProfileWithID(prefs[VLMMenuProfilesKey], self.profileID);
+    NSDictionary *existing = [self currentProfile];
     if (!existing) {
         return;
     }
     NSMutableDictionary *updated = [existing mutableCopy];
     updated[@"order"] = [_order copy] ?: @[];
     updated[@"hidden"] = _hidden.allObjects ?: @[];
-    if (enableCustomSort) {
-        updated[@"customOrder"] = @YES;
-    }
-    NSArray *profiles = VLMUpsertProfile(prefs[VLMMenuProfilesKey], updated);
-    VLMWritePrefsValues(@{VLMMenuProfilesKey: profiles}, YES);
+    updated[@"customOrder"] = @(_customOrder);
+    NSArray *profiles = VLMUpsertProfile(_prefsSnapshot[VLMMenuProfilesKey], updated);
+    NSMutableDictionary *nextPrefs = [_prefsSnapshot mutableCopy] ?: [NSMutableDictionary dictionary];
+    nextPrefs[VLMMenuProfilesKey] = profiles;
+    _prefsSnapshot = nextPrefs;
+    NSDictionary *profileSnapshot = VLMProfileWithID(profiles, self.profileID) ?: updated;
+    VLMWritePrefsValuesAsync(@{VLMMenuProfilesKey: @[profileSnapshot]}, YES);
 }
 
 - (void)resetOrder {
     if ([self isGlobal]) {
         NSMutableArray<NSString *> *ids = [VLMDefaultOrderIDs() mutableCopy];
         NSMutableSet<NSString *> *seen = [NSMutableSet setWithArray:ids];
-        for (NSDictionary *item in VLMGlobalRuleItems(self.globalKind)) {
-            NSString *itemID = item[@"id"];
+        for (NSString *itemID in _order) {
             if (itemID.length && ![seen containsObject:itemID]) {
                 [ids addObject:itemID];
                 [seen addObject:itemID];
@@ -180,7 +186,8 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
                 @"title": _labels[itemID] ?: VLMLabelForItemID(itemID) ?: itemID,
             }];
         }
-        VLMWriteGlobalRule(self.globalKind, _order, @[], items, NO);
+        _customOrder = NO;
+        VLMWriteGlobalRuleAsync(self.globalKind, _order, @[], items, NO);
         [_tableView reloadData];
         return;
     }
@@ -193,13 +200,17 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
     }
     _order = ids;
     [_hidden removeAllObjects];
-    NSDictionary *prefs = VLMReadPrefsDictionary();
     NSMutableDictionary *updated = [profile mutableCopy] ?: [NSMutableDictionary dictionary];
     updated[@"order"] = [_order copy] ?: @[];
     updated[@"hidden"] = @[];
     updated[@"customOrder"] = @NO;
-    NSArray *profiles = VLMUpsertProfile(prefs[VLMMenuProfilesKey], updated);
-    VLMWritePrefsValues(@{VLMMenuProfilesKey: profiles}, YES);
+    _customOrder = NO;
+    NSArray *profiles = VLMUpsertProfile(_prefsSnapshot[VLMMenuProfilesKey], updated);
+    NSMutableDictionary *nextPrefs = [_prefsSnapshot mutableCopy] ?: [NSMutableDictionary dictionary];
+    nextPrefs[VLMMenuProfilesKey] = profiles;
+    _prefsSnapshot = nextPrefs;
+    NSDictionary *profileSnapshot = VLMProfileWithID(profiles, self.profileID) ?: updated;
+    VLMWritePrefsValuesAsync(@{VLMMenuProfilesKey: @[profileSnapshot]}, YES);
     [_tableView reloadData];
 }
 
@@ -216,7 +227,11 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
         [_hidden addObject:itemID];
     }
     [self writePrefsAndEnableCustomSort:NO];
-    [_tableView reloadData];
+    NSUInteger row = [_order indexOfObject:itemID];
+    if (row != NSNotFound) {
+        [_tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:(NSInteger)row inSection:0]]
+                          withRowAnimation:UITableViewRowAnimationNone];
+    }
 }
 
 - (void)visibilitySwitchChanged:(UISwitch *)toggle {
@@ -234,7 +249,11 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
         [_hidden addObject:itemID];
     }
     [self writePrefsAndEnableCustomSort:NO];
-    [_tableView reloadData];
+    NSUInteger row = [_order indexOfObject:itemID];
+    if (row != NSNotFound) {
+        [_tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:(NSInteger)row inSection:0]]
+                          withRowAnimation:UITableViewRowAnimationNone];
+    }
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {

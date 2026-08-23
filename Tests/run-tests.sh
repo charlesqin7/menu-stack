@@ -17,7 +17,9 @@ xcrun --sdk macosx clang \
   -Wno-unused-variable \
   -I"$ROOT_DIR" \
   -framework Foundation \
+  -framework CoreGraphics \
   "$ROOT_DIR/VLMMenuRules.m" \
+  "$ROOT_DIR/VLMMenuGeometry.m" \
   "$ROOT_DIR/VLMMenuOrder.m" \
   "$ROOT_DIR/Tests/VLMTestStubs.m" \
   "$ROOT_DIR/Tests/VLMMenuRulesTests.m" \
