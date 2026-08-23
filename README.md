@@ -20,7 +20,7 @@ iOS 16/17 里「长按出现一排按钮」其实有三条互不相干的渲染�
 
 ## 实现要点
 
-核心代码在 `Tweak.x`，分两层。
+核心代码在 `Tweak.x`。菜单内容规则与视觉布局彼此独立：规则只在 UIKit 交付菜单模型时改一次菜单树，collection view 层只负责纵向尺寸、滚动和安全区域。
 
 ### 1. 上下文菜单 / palette（公开 API，最稳）
 
@@ -46,6 +46,13 @@ iOS 16/17 里「长按出现一排按钮」其实有三条互不相干的渲染�
 
 私有类名随系统小版本可能变。打开设置里的「调试日志」后，用 `idevicesyslog | grep VerticalMenu` 看有没有 `sizeThatFits` 日志，就能确认 hook 是否打上。
 
+### 3. 排序与隐藏（V2 策略）
+
+- `MenuRegistryV2` 只记录 App 实际出现过的菜单项；观察菜单不会覆盖用户规则，也不会在每次展示时同步写盘。动态观察有容量上限，避免长期使用后偏好文件无限增长。
+- `MenuPoliciesV2` 保存全局策略和 App 例外。App 可对每一项选择“继承 / 显示 / 隐藏”，因此可以恢复全局隐藏的项目；顺序可选“继承 / 系统 / 自定义”。
+- 自定义顺序分为“固定到前面 / 相对顺序 / 固定到后面”。未配置或后来动态出现的项目保留系统槽位，不会被统一挤到末尾。
+- 规则递归处理 `UIMenu` 层级和延迟生成的菜单项，不再在 cell 或 collection view 层二次排序。
+
 ## 工程结构
 
 ```
@@ -56,7 +63,7 @@ Tweak.x                  Logos hook
 VLMMenuRules.h/.m        可独立测试的菜单匹配、排序、隐藏与迁移规则
 VLMMenuOrder.h/.m        设置持久化、跨进程同步和规则数据适配
 Tests/                   Foundation 规则测试与工程元数据检查
-Prefs/                   设置 App 里的「纵向菜单」开关与菜单排序页（含图标）
+Prefs/                   设置 App 里的「纵向菜单」开关与菜单规则页
 layout/Library/PreferenceLoader/Preferences/
                          VerticalMenu.plist 设置入口（含图标）
                          VerticalMenu.png / @2x / @3x
@@ -67,12 +74,13 @@ layout/Library/PreferenceLoader/Preferences/
 - `Enabled`：总开关，默认开
 - `ContextMenus`：改 compact / palette 上下文菜单
 - `EditMenus`：改拷贝粘贴条
-- `CustomOrder` / `MenuItemOrder` / `HiddenMenuItems`：旧版全局列表，升级后并入 `GlobalRules`
-- `GlobalRules`：文本选择 / 上下文菜单各一份全局顺序与隐藏，对所有 App 生效
-- `MenuProfiles`：每个 App 最近一次弹出的项，以及只对这个 App 多藏的项（可选覆盖顺序）
+- `MenuPoliciesV2`：文本选择 / 上下文菜单各一份全局规则，并保存各 App 的三态可见性与顺序模式
+- `MenuRegistryV2`：按 App × 菜单类型合并的观察记录，仅用于设置页列出真实出现过的菜单项
+- `MenuPolicyV1Backup`：首次升级时保存旧版全局、Profile、顺序和隐藏字段，便于排查迁移问题
+- `CustomOrder` / `MenuItemOrder` / `HiddenMenuItems` / `GlobalRules` / `MenuProfiles`：旧版兼容数据，首次升级后迁移到 V2
 - `Debug`：NSLog 前缀 `[VerticalMenu]`
 
-在设置里先改「文本选择 · 全局」和「上下文菜单 · 全局」。某个 App 还要多藏几项，或只改这个 App 的顺序时，打开「按 App 例外」。先在对应 App 里弹出一次菜单，列表里才会出现该 App。全局已经隐藏的项不能在某个 App 里再打开。
+在设置里先改「文本选择 · 全局」和「上下文菜单 · 全局」。某个 App 要恢复全局隐藏项、额外隐藏项目，或使用自己的顺序时，打开「按 App 例外」。先在对应 App 里弹出一次菜单，Registry 记录后该 App 才会出现在列表中。
 
 改开关或排序后点「注销 SpringBoard」，并且把目标 App 从多任务里划掉再开，注入才会进新进程。
 
@@ -120,10 +128,10 @@ bash Tests/run-tests.sh
 
 RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把 Safari 从多任务划掉再开。
 
-插件注入时**总会**打一条 `NSLog`，不依赖「调试日志」开关：
+打开「调试日志」后，插件注入时会输出类似：
 
 ```
-[VerticalMenu] loaded in com.apple.mobilesafari enabled=1 context=1 edit=1 debug=0 list=1 sort=1
+[VerticalMenu] loaded in com.apple.mobilesafari enabled=1 context=1 edit=1 debug=1 list=1 registry=2
 ```
 
 用 `idevicesyslog | grep VerticalMenu`（或设备上的系统日志）就能确认有没有进 Safari。打开「调试日志」后才会有 `sizeThatFits` 等细节。若复制菜单完全不出现，先在设置里关掉「文本选择菜单」，划掉 App 再试：横条应恢复，用来确认是不是这一层 hook 的问题。
@@ -133,12 +141,13 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 1. 备忘录或信息里长按一条内容：顶部那排并排小按钮应变成逐行列表。
 2. 任意输入框选中文字：拷贝菜单应为纵向列表，一次最多 5 项，其余可上下滑；靠近屏幕顶部选字时不应顶进状态栏。
 3. Safari 长按链接：若系统给了 palette / compact 行，应变纵向；本来就是竖列表的动作区保持竖列表。
-4. 设置里打开「文本选择 · 全局」，把「粘贴」拖到最上面：各 App 选中文字后弹出的菜单第一项应是粘贴。
+4. 设置里打开「文本选择 · 全局」，把「粘贴」拖到“固定到前面”：各 App 选中文字后，系统提供粘贴时它应排在首组。
 5. 关闭「上下文菜单」并重新打开目标 App：系统上下文菜单应完全恢复原样，不再应用全局排序或隐藏。
 6. 关闭「文本选择菜单」并重新打开目标 App：拷贝 / 粘贴菜单应恢复系统原始横条。
-7. 在「按 App 例外」里只隐藏某个 App 的一项：其它 App 仍应显示该项；全局隐藏项不能在 App 例外里重新打开。
-8. 打开键盘并在屏幕顶部、底部各选一次文字：菜单不得进入状态栏、灵动岛或键盘区域；超过 5 项时仍可顺畅上下滑。
-9. 关闭「调试日志」时不应输出 `[VerticalMenu]` 诊断日志；打开后再弹出菜单，才应出现布局、记录和设置持久化细节。
+7. 在「按 App 例外」里隐藏一项：其它 App 仍应显示；再把一个全局隐藏项设为“显示”，该项在此 App 中应恢复（前提是系统本次提供它）。
+8. 把两个已知项目调换相对顺序，然后触发包含动态项目的菜单：动态项目应保留原系统位置，子菜单层级也不应被拆散。
+9. 打开键盘并在屏幕顶部、底部各选一次文字：菜单不得进入状态栏、灵动岛或键盘区域；超过 5 项时仍可顺畅上下滑。
+10. 关闭「调试日志」时不应输出 `[VerticalMenu]` 诊断日志；打开后再弹出菜单，才应出现布局、记录和设置持久化细节。
 
 ## 没生效时怎么查
 
@@ -148,6 +157,15 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 2. 打开调试日志，完全杀掉 App 再开，看是否出现 `[VerticalMenu] loaded in <bundle id>`。没有日志就是没注入（ElleKit 过滤、未 respring、装到了错误的 scheme）。
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
+
+## 更新（1.0.50）
+
+- 修复 V2 包安装后 SpringBoard 进入安全模式：SpringBoard 只保留偏好通信，不再安装菜单 UI hook 或执行策略迁移；V2 迁移改由“设置”进程完成。
+
+## 更新（1.0.49）
+
+- 修复同一菜单行同时显示系统原生标题和插件标题造成的两个“粘贴”及图标叠字；缓存快速路径也会持续压住 UIKit 后创建的原生标题与图标。
+- 固定菜单行共用的左侧对齐基准，并关闭纵向列表的边界橡皮筋，避免滑到最上方或最下方时部分菜单项横向跳动。
 
 ## 更新（1.0.48）
 

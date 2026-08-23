@@ -75,6 +75,87 @@ static void TestEffectiveRules(void) {
                    @"uses an app-specific order override");
 }
 
+static void TestV2PolicyResolution(void) {
+    NSDictionary *global = VLMRulesNormalizedPolicy(@{
+        @"visibility": @{@"translate": VLMRulesVisibilityHide, @"share": VLMRulesVisibilityHide},
+        @"first": @[@"copy"],
+        @"relative": @[@"paste", @"copy"],
+        @"last": @[@"delete"],
+        @"orderMode": VLMRulesOrderModeCustom,
+    });
+    NSDictionary *app = VLMRulesNormalizedPolicy(@{
+        @"visibility": @{@"translate": VLMRulesVisibilityShow, @"lookup": VLMRulesVisibilityHide},
+        @"orderMode": VLMRulesOrderModeInherit,
+    });
+    NSDictionary *resolved = VLMRulesResolvedPolicy(global, app);
+    VLMAssertEqual(VLMRulesVisibilityForItem(resolved, @"translate"),
+                   VLMRulesVisibilityShow,
+                   @"allows an app to restore a globally hidden action");
+    VLMAssertEqual(VLMRulesVisibilityForItem(resolved, @"share"),
+                   VLMRulesVisibilityHide,
+                   @"inherits an unrelated global hidden action");
+    VLMAssertEqual(VLMRulesVisibilityForItem(resolved, @"lookup"),
+                   VLMRulesVisibilityHide,
+                   @"applies an app-only hidden action");
+    VLMAssert(VLMRulesPolicyHasOrdering(resolved), @"inherits global sparse ordering");
+
+    NSArray *visible = VLMRulesApplyPolicyToItems((@[@"translate", @"share", @"lookup"]),
+                                                   resolved,
+                                                   ^NSString *(id item) { return item; });
+    VLMAssertEqual(visible,
+                   @[@"translate"],
+                   @"applies the resolved app show override and both inherited/app hides");
+
+    NSDictionary *systemApp = VLMRulesResolvedPolicy(global, @{@"orderMode": VLMRulesOrderModeSystem});
+    VLMAssert(!VLMRulesPolicyHasOrdering(systemApp), @"lets an app restore system ordering");
+}
+
+static void TestV2SparseOrdering(void) {
+    NSDictionary *relative = @{
+        @"relative": @[@"paste", @"copy"],
+        @"orderMode": VLMRulesOrderModeCustom,
+    };
+    NSArray *source = @[@"copy", @"dynamic", @"paste", @"share"];
+    NSArray *rewritten = VLMRulesApplyPolicyToItems(source, relative, ^NSString *(id item) {
+        return item;
+    });
+    VLMAssertEqual(rewritten,
+                   (@[@"paste", @"dynamic", @"copy", @"share"]),
+                   @"reorders configured actions without moving an unknown dynamic action out of its slot");
+
+    rewritten = VLMRulesApplyPolicyToItems(source, relative, ^NSString *(id item) {
+        return [item isEqual:@"dynamic"] ? nil : item;
+    });
+    VLMAssertEqual(rewritten,
+                   (@[@"paste", @"dynamic", @"copy", @"share"]),
+                   @"keeps an unidentifiable dynamic element in place without crashing");
+
+    NSDictionary *pinned = @{
+        @"first": @[@"paste", @"copy"],
+        @"last": @[@"delete"],
+        @"orderMode": VLMRulesOrderModeCustom,
+    };
+    rewritten = VLMRulesApplyPolicyToItems((@[@"delete", @"copy", @"share", @"paste"]), pinned, ^NSString *(id item) {
+        return item;
+    });
+    VLMAssertEqual(rewritten,
+                   (@[@"paste", @"copy", @"share", @"delete"]),
+                   @"supports ordered first and last pins");
+}
+
+static void TestV2PolicySanitizing(void) {
+    NSDictionary *policy = VLMRulesNormalizedPolicy(@{
+        @"visibility": @{@"copy": @42, @42: VLMRulesVisibilityHide},
+        @"relative": @[@42, @{@"id": @42}, @"paste"],
+        @"orderMode": @42,
+    });
+    VLMAssertEqual(policy[@"visibility"], @{}, @"drops malformed visibility keys and values");
+    VLMAssertEqual(policy[@"relative"], @[@"paste"], @"drops malformed ordering IDs");
+    VLMAssertEqual(policy[@"orderMode"],
+                   VLMRulesOrderModeCustom,
+                   @"infers custom mode from a valid sparse ordering field");
+}
+
 static NSDictionary *TestProfile(NSString *profileID,
                                  NSArray<NSDictionary *> *items,
                                  NSArray<NSString *> *order,
@@ -117,6 +198,72 @@ static void TestLegacyProfileMerge(void) {
                    [NSSet setWithArray:@[@"copy", @"paste"]],
                    @"preserves hidden IDs from both legacy profiles");
     VLMAssert(VLMProfileCustomOrder(merged), @"preserves an existing app order override");
+}
+
+static void TestV2RegistryUnion(void) {
+    NSArray *records = VLMSanitizeRegistryRecords(@[
+        @{
+            @"kind": VLMMenuKindContext,
+            @"bundle": @"com.example.reader",
+            @"appName": @"Reader",
+            @"items": @[@{@"id": @"copy", @"title": @"拷贝"},
+                         @{@"id": @"custom:Open chapter", @"title": @"Open chapter"}],
+            @"seenAt": @1,
+        },
+        @{
+            @"kind": VLMMenuKindContext,
+            @"bundle": @"com.example.reader",
+            @"appName": @"Reader",
+            @"items": @[@{@"id": @"paste", @"title": @"粘贴"},
+                         @{@"id": @"copy", @"title": @"Copy"}],
+            @"seenAt": @2,
+        },
+    ]);
+    VLMAssertEqual(@(records.count), @1, @"keeps one registry record per app and menu kind");
+    NSDictionary *record = records.firstObject;
+    NSArray *ids = [VLMProfileItems(record) valueForKey:@"id"];
+    VLMAssert([ids containsObject:@"copy"] && [ids containsObject:@"paste"],
+              @"unions actions observed in different menus of the same app");
+    VLMAssert([ids containsObject:@"title:com.example.reader:open chapter"],
+              @"scopes a title-only fallback identity to its app");
+
+    records = VLMRemoveRegistryRecord(records, record[@"id"]);
+    VLMAssertEqual(records, @[], @"removes an observed app/menu record without touching policy data");
+}
+
+static void TestV2RegistryBounds(void) {
+    NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
+    for (NSUInteger index = 0; index < 160; index++) {
+        [items addObject:@{
+            @"id": [NSString stringWithFormat:@"action:%lu", (unsigned long)index],
+            @"title": [NSString stringWithFormat:@"Action %lu", (unsigned long)index],
+        }];
+    }
+    NSArray *records = VLMSanitizeRegistryRecords(@[@{
+        @"kind": VLMMenuKindContext,
+        @"bundle": @"com.example.dynamic",
+        @"items": items,
+        @"seenAt": @1,
+    }]);
+    VLMAssertEqual(@([VLMProfileItems(records.firstObject) count]),
+                   @64,
+                   @"bounds dynamic observations so Registry size cannot grow forever");
+
+    NSMutableArray<NSDictionary *> *manyRecords = [NSMutableArray array];
+    for (NSUInteger index = 0; index < 260; index++) {
+        [manyRecords addObject:@{
+            @"kind": VLMMenuKindEdit,
+            @"bundle": [NSString stringWithFormat:@"com.example.app%lu", (unsigned long)index],
+            @"items": @[@{@"id": @"copy", @"title": @"Copy"}],
+            @"seenAt": @(index),
+        }];
+    }
+    records = VLMSanitizeRegistryRecords(manyRecords);
+    VLMAssertEqual(@(records.count), @240, @"bounds the total number of observed app/menu records");
+    NSDictionary *newestRecord = records.firstObject;
+    VLMAssertEqual(newestRecord[@"bundle"],
+                   @"com.example.app259",
+                   @"retains the most recently observed records when pruning");
 }
 
 static void TestMigration(void) {
@@ -178,7 +325,7 @@ static void TestSafeFilteringAndSorting(void) {
                                               ^NSString *(id item) {
         return item;
     });
-    VLMAssert(allHidden == original, @"keeps the original menu when every item is hidden");
+    VLMAssertEqual(allHidden, @[], @"returns an empty menu when every item is hidden");
 
     NSArray *items = @[@"copy", @"paste", @"share"];
     NSArray *rewritten = VLMRulesApplyToItems(items,
@@ -232,7 +379,12 @@ int main(void) {
         TestCustomItemIDs();
         TestLegacyRuleItems();
         TestEffectiveRules();
+        TestV2PolicyResolution();
+        TestV2SparseOrdering();
+        TestV2PolicySanitizing();
         TestLegacyProfileMerge();
+        TestV2RegistryUnion();
+        TestV2RegistryBounds();
         TestMigration();
         TestJunkFiltering();
         TestSafeFilteringAndSorting();

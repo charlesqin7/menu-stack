@@ -60,7 +60,7 @@
 			<key>label</key>
 			<string>全局顺序与隐藏</string>
 			<key>footerText</key>
-			<string>文本选择和上下文菜单各一份，对所有 App 生效。某次弹出没有的项会被跳过。某个 App 还要多藏几项时，用下面的「按 App 例外」。</string>
+			<string>默认跟随系统顺序；也可把项目固定到前面或后面。未配置和后来新增的动态项目继续保留系统位置。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -96,7 +96,7 @@
 			<key>label</key>
 			<string>按 App 例外</string>
 			<key>footerText</key>
-			<string>只记录最近一次弹出时菜单条上真正出现的项。全局已经隐藏的项，不能在某个 App 里再打开。</string>
+			<string>汇总各 App 曾经出现过的项目。每项可继承全局、仅在此 App 显示或仅在此 App 隐藏。</string>
 		</dict>
 		<dict>
 			<key>cell</key>

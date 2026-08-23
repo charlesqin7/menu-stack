@@ -8,7 +8,7 @@
 extern char **environ;
 
 #ifndef VLM_VERSION
-#define VLM_VERSION "1.0.48"
+#define VLM_VERSION "1.0.50"
 #endif
 
 @interface VLMMenuListController : UIViewController
@@ -40,7 +40,7 @@ extern char **environ;
 - (NSArray *)specifiers {
     static dispatch_once_t migrationToken;
     dispatch_once(&migrationToken, ^{
-        VLMMigrateToGlobalRulesIfNeededAsync();
+        VLMMigrateToPolicyV2IfNeededAsync();
     });
     if (!_specifiers) {
         _specifiers = [self loadSpecifiersFromPlistName:@"Root" target:self];
