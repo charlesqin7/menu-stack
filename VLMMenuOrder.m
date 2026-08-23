@@ -702,7 +702,6 @@ static void VLMIngestIncomingPrefsNow(void) {
     VLMTryUnsandbox();
     NSArray<NSString *> *paths = VLMIncomingPlistPathsForIngest();
     if (paths.count == 0) {
-        VLMMigrateToPolicyV2IfNeeded();
         return;
     }
     VLMStorageLog(@"ingest paths=%lu sb=%d first=%@",
@@ -749,7 +748,6 @@ static void VLMIngestIncomingPrefsNow(void) {
         }
     }
     gApplyingRemotePrefs = NO;
-    VLMMigrateToPolicyV2IfNeeded();
 }
 
 void VLMIngestIncomingPrefs(void) {

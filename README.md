@@ -158,6 +158,10 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
 
+## 更新（1.0.50）
+
+- 修复 V2 包安装后 SpringBoard 进入安全模式：SpringBoard 只保留偏好通信，不再安装菜单 UI hook 或执行策略迁移；V2 迁移改由“设置”进程完成。
+
 ## 更新（1.0.49）
 
 - 修复同一菜单行同时显示系统原生标题和插件标题造成的两个“粘贴”及图标叠字；缓存快速路径也会持续压住 UIKit 后创建的原生标题与图标。

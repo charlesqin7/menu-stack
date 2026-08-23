@@ -3342,14 +3342,17 @@ static void VLMIncomingPrefsChanged(CFNotificationCenterRef center, void *observ
     VLMLoadPrefs();
     VLMStartPrefsWriterIfNeeded();
     VLMStartIncomingObserverIfNeeded();
-    if (isSpringBoard) {
-        VLMMigrateToPolicyV2IfNeededAsync();
-    }
     BOOL hookedList = NO;
 
-    %init(ContextMenus);
-    if (objc_getClass("UIDeferredMenuElement")) {
-        %init(DeferredMenus);
+    // SpringBoard is retained only as the preference bridge. Installing menu
+    // model hooks or running policy migration while it is launching can take
+    // down the shell and force the device into safe mode. Preferences performs
+    // the V2 migration, while ordinary UIKit apps own all menu presentation.
+    if (!isSpringBoard) {
+        %init(ContextMenus);
+        if (objc_getClass("UIDeferredMenuElement")) {
+            %init(DeferredMenus);
+        }
     }
 
     if (!isSpringBoard && objc_getClass("UIEditMenuInteraction")) {
