@@ -2937,7 +2937,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
     if (gVLMReadingOriginalMenu > 0) {
         return orig;
     }
-    if (!gEnabled || orig.count == 0) {
+    if (!VLMContextOn() || orig.count == 0) {
         return orig;
     }
     NSArray *sorted = VLMRewrittenElementsForKind(orig, VLMMenuKindContext);
@@ -3006,7 +3006,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
 }
 
 - (UIMenu *)menuByReplacingChildren:(NSArray *)newChildren {
-    if (gEnabled && newChildren.count > 0) {
+    if (VLMContextOn() && newChildren.count > 0) {
         VLMRememberUIMenuElements(newChildren, VLMMenuKindContext);
     }
     if (VLMContextOn()) {

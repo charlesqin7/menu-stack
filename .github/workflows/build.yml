@@ -2,6 +2,8 @@ name: Build
 
 on:
   push:
+    branches:
+      - main
   pull_request:
   workflow_dispatch:
 
@@ -80,7 +82,7 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: build
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -123,8 +125,9 @@ jobs:
             "- \`roothide-*.deb\`：RootHide / Bootstrap" \
             "" \
             "装完 respring，并把 Safari 等目标 App 从多任务划掉再开。")
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release delete "$TAG" --yes --cleanup-tag
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Release tag ${TAG} already exists; keeping the published release unchanged."
+            exit 0
           fi
           gh release create "$TAG" release/*.deb \
             --title "纵向菜单 ${VERSION}" \
