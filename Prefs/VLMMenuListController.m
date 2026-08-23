@@ -74,7 +74,7 @@
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return @"每个 App 只显示两条：文本选择（拷贝粘贴条）和上下文菜单（长按后的动作列表）。选中文字、空白处、格式子菜单在系统里是不同组合，但会合并成这两条，所以不会再出现一堆看起来重复的备忘录项。列表里是出现过的全部项，某次弹出没有的会被跳过。";
+    return @"每个 App 只显示两条：文本选择（拷贝粘贴条）和上下文菜单（长按后的动作列表）。列表按该 App 实际弹出过的项记录，不会写死某个按钮。某次弹出没有的项会被跳过。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {

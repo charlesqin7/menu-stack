@@ -60,7 +60,7 @@
 			<key>label</key>
 			<string>按菜单设置</string>
 			<key>footerText</key>
-			<string>隐藏不必打开自定义排序。每个 App 只保留「文本选择」和「上下文菜单」两条，系统里那些看起来重复的组合会合并在一起。</string>
+			<string>隐藏不必打开自定义排序。每个 App 只保留「文本选择」和「上下文菜单」两条。列表按实际弹出过的项记录，不预置某个 App 的特殊按钮。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
