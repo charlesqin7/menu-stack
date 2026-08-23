@@ -66,10 +66,10 @@ layout/Library/PreferenceLoader/Preferences/
 - `EditMenus`：改拷贝粘贴条
 - `CustomOrder`：已改为按每个菜单单独记录；只有拖过顺序的那个菜单才会按自定义顺序排
 - `MenuItemOrder` / `HiddenMenuItems`：旧版全局列表，仅作尚未记录过的菜单的隐藏回退
-- `MenuProfiles`：每种菜单自己的项目、顺序和隐藏列表
+- `MenuProfiles`：每个 App 各两条（文本选择 / 上下文菜单），里面是出现过的项、顺序和隐藏列表
 - `Debug`：NSLog 前缀 `[VerticalMenu]`
 
-在设置里打开「按菜单设置顺序与隐藏」。先在对应 App 里弹出一次菜单，列表里就会出现「备忘录 · 文本选择」「Safari · 文本选择」等条目。每个菜单的隐藏和顺序互不影响。关掉某项即可隐藏，不必打开自定义排序。
+在设置里打开「按菜单设置顺序与隐藏」。先在对应 App 里弹出一次菜单，列表里就会出现「备忘录 · 文本选择」「Safari · 文本选择」等条目。系统里那些看起来重复的组合会合并成这两条。每个 App 的隐藏和顺序互不影响。关掉某项即可隐藏，不必打开自定义排序。
 
 改开关或排序后点「注销 SpringBoard」，并且把目标 App 从多任务里划掉再开，注入才会进新进程。
 
@@ -130,6 +130,11 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 2. 打开调试日志，完全杀掉 App 再开，看是否出现 `[VerticalMenu] loaded in <bundle id>`。没有日志就是没注入（ElleKit 过滤、未 respring、装到了错误的 scheme）。
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
+
+## 更新（1.0.37）
+
+- 「按菜单设置」不再按系统每一次内部组合拆行。每个 App 只保留「文本选择」和「上下文菜单」两条，备忘录里选中文字、空白处、格式子菜单等会合并在一起。
+- 升级后打开设置页或弹出一次菜单，会把旧的重复项自动合并；隐藏和自定义排序仍按 App × 菜单类型生效。
 
 ## 更新（1.0.33）
 

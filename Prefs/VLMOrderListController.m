@@ -151,7 +151,7 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return @"这里只列出这个菜单里出现过的项。关闭右边开关即可隐藏，不必打开自定义排序，也不会改到别的菜单。按住右边横条拖动后，只有这个菜单会按你的顺序排列。";
+    return @"这里列出这个 App 里这类菜单出现过的全部项。选中文字、空白处、格式子菜单等组合会合并在一起，某次弹出没有的项会被跳过。关闭右边开关即可隐藏，不必打开自定义排序。按住右边横条拖动后，只有这一类菜单会按你的顺序排列。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {

@@ -60,7 +60,7 @@
 			<key>label</key>
 			<string>按菜单设置</string>
 			<key>footerText</key>
-			<string>隐藏和排序分开：关掉某项即可隐藏，不必打开自定义排序。点「按菜单设置」可为备忘录、Safari 等每种长按菜单单独调整。改完后请注销或划掉正在用的 App。</string>
+			<string>隐藏不必打开自定义排序。每个 App 只保留「文本选择」和「上下文菜单」两条，系统里那些看起来重复的组合会合并在一起。</string>
 		</dict>
 		<dict>
 			<key>cell</key>

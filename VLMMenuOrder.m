@@ -644,14 +644,144 @@ NSString *VLMKindDisplayName(NSString *kind) {
 }
 
 NSString *VLMProfileIDForMenu(NSString *kind, NSString *bundleID, NSArray<NSString *> *itemIDs) {
-    NSMutableSet<NSString *> *unique = [NSMutableSet set];
-    for (NSString *itemID in itemIDs) {
-        if ([itemID isKindOfClass:[NSString class]] && itemID.length > 0) {
-            [unique addObject:itemID];
+    (void)itemIDs;
+    return [NSString stringWithFormat:@"%@|%@", kind.length ? kind : VLMMenuKindEdit, bundleID ?: @""];
+}
+
+static NSDictionary *VLMNormalizedProfile(NSDictionary *profile) {
+    NSArray<NSDictionary *> *items = VLMProfileItems(profile);
+    if (items.count == 0 || ![profile isKindOfClass:[NSDictionary class]]) {
+        return nil;
+    }
+    NSString *kind = profile[@"kind"] ?: VLMMenuKindEdit;
+    NSString *bundle = profile[@"bundle"] ?: @"";
+    NSString *canonicalID = VLMProfileIDForMenu(kind, bundle, nil);
+    NSString *oldID = [profile[@"id"] isKindOfClass:[NSString class]] ? profile[@"id"] : nil;
+    BOOL migrated = oldID.length > 0 && ![oldID isEqualToString:canonicalID];
+    return @{
+        @"id": canonicalID,
+        @"kind": kind,
+        @"bundle": bundle,
+        @"appName": profile[@"appName"] ?: VLMGuessAppName(bundle),
+        @"items": items,
+        @"order": VLMProfileDisplayOrder(profile),
+        @"hidden": VLMProfileHiddenIDs(profile),
+        @"customOrder": @(migrated ? NO : VLMProfileCustomOrder(profile)),
+        @"seenAt": profile[@"seenAt"] ?: @0,
+    };
+}
+
+static NSDictionary *VLMCombineProfiles(NSDictionary *left, NSDictionary *right) {
+    if (!left) {
+        return right;
+    }
+    if (!right) {
+        return left;
+    }
+    NSMutableArray<NSDictionary *> *items = [VLMProfileItems(left) mutableCopy];
+    NSMutableSet<NSString *> *seenItems = [NSMutableSet set];
+    for (NSDictionary *item in items) {
+        if (item[@"id"]) {
+            [seenItems addObject:item[@"id"]];
         }
     }
-    NSArray<NSString *> *sorted = [[unique allObjects] sortedArrayUsingSelector:@selector(compare:)];
-    return [NSString stringWithFormat:@"%@|%@|%@", kind.length ? kind : VLMMenuKindEdit, bundleID ?: @"", [sorted componentsJoinedByString:@","]];
+    for (NSDictionary *item in VLMProfileItems(right)) {
+        NSString *itemID = item[@"id"];
+        if (itemID.length == 0 || [seenItems containsObject:itemID]) {
+            continue;
+        }
+        [seenItems addObject:itemID];
+        [items addObject:item];
+    }
+    NSMutableArray<NSString *> *order = [NSMutableArray array];
+    NSMutableSet<NSString *> *seenOrder = [NSMutableSet set];
+    for (NSString *itemID in [VLMProfileDisplayOrder(left) arrayByAddingObjectsFromArray:VLMProfileDisplayOrder(right)]) {
+        if (itemID.length == 0 || [seenOrder containsObject:itemID] || ![seenItems containsObject:itemID]) {
+            continue;
+        }
+        [seenOrder addObject:itemID];
+        [order addObject:itemID];
+    }
+    NSMutableArray<NSString *> *hidden = [NSMutableArray array];
+    NSMutableSet<NSString *> *seenHidden = [NSMutableSet set];
+    for (NSString *itemID in [VLMProfileHiddenIDs(left) arrayByAddingObjectsFromArray:VLMProfileHiddenIDs(right)]) {
+        if (itemID.length == 0 || [seenHidden containsObject:itemID]) {
+            continue;
+        }
+        [seenHidden addObject:itemID];
+        [hidden addObject:itemID];
+    }
+    NSTimeInterval seenAt = MAX([left[@"seenAt"] doubleValue], [right[@"seenAt"] doubleValue]);
+    NSMutableDictionary *merged = [left mutableCopy];
+    merged[@"items"] = items;
+    merged[@"order"] = order;
+    merged[@"hidden"] = hidden;
+    merged[@"customOrder"] = @(VLMProfileCustomOrder(left) || VLMProfileCustomOrder(right));
+    merged[@"seenAt"] = @(seenAt);
+    if ([right[@"appName"] length] && ![merged[@"appName"] length]) {
+        merged[@"appName"] = right[@"appName"];
+    }
+    return VLMNormalizedProfile(merged);
+}
+
+NSArray<NSDictionary *> *VLMSanitizeProfiles(id value) {
+    if (![value isKindOfClass:[NSArray class]]) {
+        return @[];
+    }
+    NSMutableArray<NSDictionary *> *profiles = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSNumber *> *indexByID = [NSMutableDictionary dictionary];
+    for (id item in (NSArray *)value) {
+        if (![item isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        NSDictionary *normalized = VLMNormalizedProfile(item);
+        if (!normalized) {
+            continue;
+        }
+        NSString *profileID = normalized[@"id"];
+        NSNumber *existingIndex = indexByID[profileID];
+        if (existingIndex) {
+            profiles[existingIndex.unsignedIntegerValue] = VLMCombineProfiles(profiles[existingIndex.unsignedIntegerValue], normalized);
+            continue;
+        }
+        indexByID[profileID] = @(profiles.count);
+        [profiles addObject:normalized];
+    }
+    [profiles sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+        NSTimeInterval leftSeen = [left[@"seenAt"] doubleValue];
+        NSTimeInterval rightSeen = [right[@"seenAt"] doubleValue];
+        if (leftSeen < rightSeen) {
+            return NSOrderedDescending;
+        }
+        if (leftSeen > rightSeen) {
+            return NSOrderedAscending;
+        }
+        return [VLMProfileDisplayTitle(left) compare:VLMProfileDisplayTitle(right)];
+    }];
+    return profiles;
+}
+
+BOOL VLMProfilesNeedRewrite(id raw) {
+    if (![raw isKindOfClass:[NSArray class]]) {
+        return NO;
+    }
+    NSArray *sanitized = VLMSanitizeProfiles(raw);
+    if ([(NSArray *)raw count] != sanitized.count) {
+        return YES;
+    }
+    for (id item in (NSArray *)raw) {
+        if (![item isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        NSDictionary *profile = item;
+        NSString *kind = profile[@"kind"] ?: VLMMenuKindEdit;
+        NSString *bundle = profile[@"bundle"] ?: @"";
+        NSString *expected = VLMProfileIDForMenu(kind, bundle, nil);
+        if (![profile[@"id"] isEqualToString:expected]) {
+            return YES;
+        }
+    }
+    return NO;
 }
 
 static NSArray<NSDictionary *> *VLMSanitizeProfileItems(id value) {
@@ -745,65 +875,11 @@ NSString *VLMProfileSubtitle(NSDictionary *profile) {
         }
     }
     NSString *preview = names.count ? [names componentsJoinedByString:@"、"] : @"暂无项目";
+    NSString *countText = [NSString stringWithFormat:@"%lu 项", (unsigned long)items.count];
     if (hidden.count > 0) {
-        return [NSString stringWithFormat:@"已隐藏 %lu 项 · %@", (unsigned long)hidden.count, preview];
+        return [NSString stringWithFormat:@"%@ · 已隐藏 %lu 项 · %@", countText, (unsigned long)hidden.count, preview];
     }
-    return preview;
-}
-
-NSArray<NSDictionary *> *VLMSanitizeProfiles(id value) {
-    if (![value isKindOfClass:[NSArray class]]) {
-        return @[];
-    }
-    NSMutableArray<NSDictionary *> *profiles = [NSMutableArray array];
-    NSMutableSet<NSString *> *seen = [NSMutableSet set];
-    for (id item in (NSArray *)value) {
-        if (![item isKindOfClass:[NSDictionary class]]) {
-            continue;
-        }
-        NSDictionary *profile = item;
-        NSArray<NSDictionary *> *items = VLMProfileItems(profile);
-        if (items.count == 0) {
-            continue;
-        }
-        NSMutableArray<NSString *> *ids = [NSMutableArray array];
-        for (NSDictionary *entry in items) {
-            [ids addObject:entry[@"id"]];
-        }
-        NSString *kind = profile[@"kind"] ?: VLMMenuKindEdit;
-        NSString *bundle = profile[@"bundle"] ?: @"";
-        NSString *profileID = profile[@"id"];
-        if (profileID.length == 0) {
-            profileID = VLMProfileIDForMenu(kind, bundle, ids);
-        }
-        if ([seen containsObject:profileID]) {
-            continue;
-        }
-        [seen addObject:profileID];
-        [profiles addObject:@{
-            @"id": profileID,
-            @"kind": kind,
-            @"bundle": bundle,
-            @"appName": profile[@"appName"] ?: VLMGuessAppName(bundle),
-            @"items": items,
-            @"order": VLMProfileDisplayOrder(profile),
-            @"hidden": VLMProfileHiddenIDs(profile),
-            @"customOrder": @(VLMProfileCustomOrder(profile)),
-            @"seenAt": profile[@"seenAt"] ?: @0,
-        }];
-    }
-    [profiles sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
-        NSTimeInterval leftSeen = [left[@"seenAt"] doubleValue];
-        NSTimeInterval rightSeen = [right[@"seenAt"] doubleValue];
-        if (leftSeen < rightSeen) {
-            return NSOrderedDescending;
-        }
-        if (leftSeen > rightSeen) {
-            return NSOrderedAscending;
-        }
-        return [VLMProfileDisplayTitle(left) compare:VLMProfileDisplayTitle(right)];
-    }];
-    return profiles;
+    return [NSString stringWithFormat:@"%@ · %@", countText, preview];
 }
 
 NSDictionary *VLMProfileWithID(NSArray *profiles, NSString *profileID) {
@@ -827,32 +903,32 @@ NSDictionary *VLMBuildProfile(NSString *kind,
     NSArray<NSDictionary *> *cleanItems = VLMSanitizeProfileItems(items);
     NSMutableArray<NSString *> *ids = [NSMutableArray array];
     for (NSDictionary *item in cleanItems) {
-        [ids addObject:item[@"id"]];
-    }
-    NSString *profileID = VLMProfileIDForMenu(kind, bundleID, ids);
-    NSMutableDictionary *seed = [NSMutableDictionary dictionary];
-    if ([existing isKindOfClass:[NSDictionary class]]) {
-        [seed addEntriesFromDictionary:existing];
-    } else {
-        NSSet<NSString *> *idSet = [NSSet setWithArray:ids];
-        NSMutableArray<NSString *> *hidden = [NSMutableArray array];
-        for (id item in inheritHidden) {
-            NSString *itemID = VLMExtractItemID(item);
-            if (itemID.length && [idSet containsObject:itemID] && ![hidden containsObject:itemID]) {
-                [hidden addObject:itemID];
-            }
+        if (item[@"id"]) {
+            [ids addObject:item[@"id"]];
         }
-        seed[@"hidden"] = hidden;
-        seed[@"order"] = ids;
-        seed[@"customOrder"] = @NO;
     }
-    seed[@"id"] = profileID;
-    seed[@"kind"] = kind.length ? kind : VLMMenuKindEdit;
-    seed[@"bundle"] = bundleID ?: @"";
-    seed[@"appName"] = appName.length ? appName : VLMGuessAppName(bundleID);
-    seed[@"items"] = cleanItems;
-    seed[@"seenAt"] = @([[NSDate date] timeIntervalSince1970]);
-    return [VLMSanitizeProfiles(@[seed]) firstObject] ?: seed;
+    NSMutableDictionary *incoming = [NSMutableDictionary dictionary];
+    incoming[@"id"] = VLMProfileIDForMenu(kind, bundleID, ids);
+    incoming[@"kind"] = kind.length ? kind : VLMMenuKindEdit;
+    incoming[@"bundle"] = bundleID ?: @"";
+    incoming[@"appName"] = appName.length ? appName : VLMGuessAppName(bundleID);
+    incoming[@"items"] = cleanItems;
+    incoming[@"order"] = ids;
+    incoming[@"seenAt"] = @([[NSDate date] timeIntervalSince1970]);
+    incoming[@"customOrder"] = @NO;
+    if ([existing isKindOfClass:[NSDictionary class]]) {
+        return VLMCombineProfiles(existing, incoming);
+    }
+    NSSet<NSString *> *idSet = [NSSet setWithArray:ids];
+    NSMutableArray<NSString *> *hidden = [NSMutableArray array];
+    for (id item in inheritHidden) {
+        NSString *itemID = VLMExtractItemID(item);
+        if (itemID.length && [idSet containsObject:itemID] && ![hidden containsObject:itemID]) {
+            [hidden addObject:itemID];
+        }
+    }
+    incoming[@"hidden"] = hidden;
+    return VLMNormalizedProfile(incoming) ?: incoming;
 }
 
 NSArray<NSDictionary *> *VLMUpsertProfile(NSArray *profiles, NSDictionary *profile) {

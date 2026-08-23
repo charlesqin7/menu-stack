@@ -49,7 +49,11 @@
 
 - (void)reloadFromPrefs {
     NSDictionary *prefs = VLMReadPrefsDictionary();
-    _profiles = VLMSanitizeProfiles(prefs[VLMMenuProfilesKey]);
+    id raw = prefs[VLMMenuProfilesKey];
+    _profiles = VLMSanitizeProfiles(raw);
+    if (VLMProfilesNeedRewrite(raw)) {
+        [self writeProfiles];
+    }
     [_tableView reloadData];
 }
 
@@ -70,7 +74,7 @@
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return @"每个 App、每种长按菜单分开设置顺序和隐藏，互不影响。请先在对应 App 里弹出一次菜单，这里就会出现。隐藏不必打开自定义排序；只有拖动顺序才会按你的排列显示。改完后请注销或划掉正在用的 App。";
+    return @"每个 App 只显示两条：文本选择（拷贝粘贴条）和上下文菜单（长按后的动作列表）。选中文字、空白处、格式子菜单在系统里是不同组合，但会合并成这两条，所以不会再出现一堆看起来重复的备忘录项。列表里是出现过的全部项，某次弹出没有的会被跳过。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {

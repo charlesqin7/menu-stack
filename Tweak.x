@@ -65,13 +65,20 @@ static BOOL VLMBool(NSDictionary *dict, NSString *key, BOOL fallback) {
 }
 
 static void VLMLoadPrefs(void) {
+    static BOOL persistingProfiles;
     NSDictionary *dict = VLMPrefsDictionary();
     gEnabled = VLMBool(dict, @"Enabled", YES);
     gContextMenus = VLMBool(dict, @"ContextMenus", YES);
     gEditMenus = VLMBool(dict, @"EditMenus", YES);
     gDebug = VLMBool(dict, @"Debug", NO);
-    gProfiles = [VLMSanitizeProfiles(dict[VLMMenuProfilesKey]) copy];
+    id rawProfiles = dict[VLMMenuProfilesKey];
+    gProfiles = [VLMSanitizeProfiles(rawProfiles) copy];
     gLegacyHidden = [NSSet setWithArray:VLMSanitizeHiddenIDs(dict[VLMHiddenItemsKey])];
+    if (!persistingProfiles && VLMProfilesNeedRewrite(rawProfiles)) {
+        persistingProfiles = YES;
+        VLMWritePrefsValues(@{VLMMenuProfilesKey: gProfiles ?: @[]}, YES);
+        persistingProfiles = NO;
+    }
 }
 
 static BOOL VLMContextOn(void) {
@@ -179,17 +186,6 @@ static NSInteger VLMRankForItemID(NSString *itemID, NSArray<NSString *> *orderID
     return (NSInteger)index;
 }
 
-static NSArray<NSString *> *VLMItemIDsFromElements(NSArray *elements) {
-    NSMutableArray<NSString *> *ids = [NSMutableArray array];
-    for (id element in elements) {
-        NSString *itemID = VLMCatalogIDForElement(element);
-        if (itemID.length > 0) {
-            [ids addObject:itemID];
-        }
-    }
-    return ids;
-}
-
 static NSArray<NSDictionary *> *VLMItemRecordsFromElements(NSArray *elements) {
     NSMutableArray<NSDictionary *> *records = [NSMutableArray array];
     NSMutableSet<NSString *> *seen = [NSMutableSet set];
@@ -216,12 +212,8 @@ static NSArray<NSDictionary *> *VLMItemRecordsFromElements(NSArray *elements) {
     return records;
 }
 
-static NSDictionary *VLMProfileForItemIDs(NSString *kind, NSArray<NSString *> *itemIDs) {
-    if (itemIDs.count < 2) {
-        return nil;
-    }
-    NSString *profileID = VLMProfileIDForMenu(kind, VLMCurrentBundleID(), itemIDs);
-    return VLMProfileWithID(gProfiles, profileID);
+static NSDictionary *VLMProfileForKind(NSString *kind) {
+    return VLMProfileWithID(gProfiles, VLMProfileIDForMenu(kind, VLMCurrentBundleID(), nil));
 }
 
 static NSSet<NSString *> *VLMHiddenSetForProfile(NSDictionary *profile) {
@@ -287,8 +279,7 @@ static NSArray *VLMRewrittenElementsForKind(NSArray *elements, NSString *kind) {
     if (!gEnabled || elements.count == 0) {
         return elements;
     }
-    NSArray<NSString *> *itemIDs = VLMItemIDsFromElements(elements);
-    NSDictionary *profile = VLMProfileForItemIDs(kind, itemIDs);
+    NSDictionary *profile = VLMProfileForKind(kind);
     NSSet<NSString *> *hidden = VLMHiddenSetForProfile(profile);
     NSArray *filtered = VLMFilteredElements(elements, hidden);
     if (profile && VLMProfileCustomOrder(profile)) {
@@ -319,9 +310,24 @@ static void VLMRememberMenuProfile(NSString *kind, NSArray<NSDictionary *> *item
     if (ids.count < 2) {
         return;
     }
-    NSDictionary *existing = VLMProfileForItemIDs(kind, ids);
-    if (existing && VLMProfileItems(existing).count == items.count) {
-        return;
+    NSDictionary *existing = VLMProfileForKind(kind);
+    if (existing) {
+        NSMutableSet<NSString *> *have = [NSMutableSet set];
+        for (NSDictionary *item in VLMProfileItems(existing)) {
+            if (item[@"id"]) {
+                [have addObject:item[@"id"]];
+            }
+        }
+        BOOL hasNew = NO;
+        for (NSString *itemID in ids) {
+            if (![have containsObject:itemID]) {
+                hasNew = YES;
+                break;
+            }
+        }
+        if (!hasNew) {
+            return;
+        }
     }
     NSDictionary *built = VLMBuildProfile(
         kind,
@@ -1433,7 +1439,7 @@ static void VLMRefreshCollectionSortMap(id host, UICollectionView *collectionVie
     }
     objc_setAssociatedObject(collectionView, kVLMCapturedTitlesKey, storedTitles, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    NSDictionary *profile = VLMProfileForItemIDs(VLMMenuKindEdit, itemIDs);
+    NSDictionary *profile = VLMProfileForKind(VLMMenuKindEdit);
     NSSet<NSString *> *hidden = VLMHiddenSetForProfile(profile);
     BOOL customOrder = profile ? VLMProfileCustomOrder(profile) : NO;
     NSArray<NSString *> *orderIDs = profile ? VLMProfileDisplayOrder(profile) : @[];
