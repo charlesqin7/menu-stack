@@ -27,6 +27,11 @@ static const NSInteger kVLMVisibleRows = 5;
 static const CGFloat kVLMListInset = 16.0;
 static const CGFloat kVLMScreenInset = 8.0;
 static const CGFloat kVLMSelectionGap = 6.0;
+static const CGFloat kVLMIconSize = 22.0;
+static const CGFloat kVLMIconLeft = 16.0;
+static const CGFloat kVLMIconTextGap = 10.0;
+static const CGFloat kVLMArrowWidth = 20.0;
+static const CGFloat kVLMArrowHeight = 11.0;
 
 #pragma mark - Prefs
 
@@ -99,9 +104,12 @@ static const void *kVLMGrowDownKey = &kVLMGrowDownKey;
 static const void *kVLMFallbackIconKey = &kVLMFallbackIconKey;
 static const void *kVLMTitleSlotKey = &kVLMTitleSlotKey;
 static const void *kVLMTitleOverlayActiveKey = &kVLMTitleOverlayActiveKey;
+static const void *kVLMCustomArrowKey = &kVLMCustomArrowKey;
+static const void *kVLMContainerGuardKey = &kVLMContainerGuardKey;
 
 static BOOL VLMNameLooksLikeArrow(UIView *view);
 static void VLMDisableConstraints(UIView *view);
+static BOOL VLMImageIsUsableIcon(UIImage *image);
 
 static UICollectionView *VLMFindCollectionView(id view) {
     if ([view isKindOfClass:[UICollectionView class]]) {
@@ -180,7 +188,7 @@ static void VLMHidePagingControls(id host) {
 }
 
 static void VLMUnclipAncestors(UIView *view) {
-    view.clipsToBounds = YES;
+    view.clipsToBounds = NO;
     UIView *current = view.superview;
     for (NSInteger depth = 0; current && depth < 6; depth++) {
         if ([current isKindOfClass:[UIWindow class]]) {
@@ -259,12 +267,58 @@ static BOOL VLMIsOnScreen(UIView *view) {
     return CGRectIntersectsRect(onScreen, window.bounds);
 }
 
+@interface VLMSelectionAnchorView : UIView
+@end
+
+@implementation VLMSelectionAnchorView
+
+- (instancetype)initWithFrame:(CGRect)frame {
+    self = [super initWithFrame:frame];
+    if (self) {
+        self.opaque = NO;
+        self.backgroundColor = [UIColor clearColor];
+        self.userInteractionEnabled = NO;
+        self.contentMode = UIViewContentModeRedraw;
+        if (@available(iOS 13.0, *)) {
+            self.tintColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *trait) {
+                if (trait.userInterfaceStyle == UIUserInterfaceStyleDark) {
+                    return [UIColor colorWithWhite:0.23 alpha:0.96];
+                }
+                return [UIColor colorWithWhite:1.0 alpha:0.96];
+            }];
+        } else {
+            self.tintColor = [UIColor colorWithWhite:1.0 alpha:0.96];
+        }
+    }
+    return self;
+}
+
+- (void)tintColorDidChange {
+    [super tintColorDidChange];
+    [self setNeedsDisplay];
+}
+
+- (void)drawRect:(CGRect)rect {
+    UIBezierPath *path = [UIBezierPath bezierPath];
+    [path moveToPoint:CGPointMake(CGRectGetMidX(rect), CGRectGetMinY(rect))];
+    [path addLineToPoint:CGPointMake(CGRectGetMaxX(rect), CGRectGetMaxY(rect))];
+    [path addLineToPoint:CGPointMake(CGRectGetMinX(rect), CGRectGetMaxY(rect))];
+    [path closePath];
+    [(self.tintColor ?: [UIColor whiteColor]) setFill];
+    [path fill];
+}
+
+@end
+
 static BOOL VLMNameLooksLikeArrow(UIView *view) {
+    if ([view isKindOfClass:[VLMSelectionAnchorView class]]) {
+        return NO;
+    }
     NSString *name = NSStringFromClass(view.class);
     if ([name containsString:@"Page"]) {
         return NO;
     }
-    return [name containsString:@"Arrow"] || [name containsString:@"Pointer"] || [name containsString:@"Callout"];
+    return [name containsString:@"Arrow"] || [name containsString:@"Pointer"] || [name containsString:@"Callout"] || [name containsString:@"Beak"];
 }
 
 static UIView *VLMFindArrowNear(UIView *host) {
@@ -277,7 +331,7 @@ static UIView *VLMFindArrowNear(UIView *host) {
     }
 
     NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
-    for (NSUInteger index = 0; index < queue.count && index < 48; index++) {
+    for (NSUInteger index = 0; index < queue.count && index < 80; index++) {
         UIView *view = queue[index];
         if (view != host && VLMNameLooksLikeArrow(view) && view.bounds.size.width < 80.0 && view.bounds.size.height < 40.0) {
             return view;
@@ -476,32 +530,117 @@ static void VLMSetFrameInWindow(UIView *view, CGRect windowFrame) {
     view.frame = [view.superview convertRect:windowFrame fromView:view.window];
 }
 
+static void VLMHideSystemArrowsNear(UIView *host) {
+    static NSArray<NSString *> *keys;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        keys = @[@"_arrowView", @"arrowView", @"_pointerView", @"pointerView"];
+    });
+    UIView *current = host;
+    for (NSInteger depth = 0; current && depth < 4; depth++) {
+        for (NSString *key in keys) {
+            @try {
+                id value = [current valueForKey:key];
+                if ([value isKindOfClass:[UIView class]] && ![value isKindOfClass:[VLMSelectionAnchorView class]]) {
+                    VLMHideView(value);
+                }
+            } @catch (__unused NSException *exception) {
+            }
+        }
+        current = current.superview;
+        if ([current isKindOfClass:[UIWindow class]]) {
+            break;
+        }
+    }
+    UIView *found = VLMFindArrowNear(host);
+    if (found && ![found isKindOfClass:[VLMSelectionAnchorView class]]) {
+        VLMHideView(found);
+    }
+}
+
+static UIView *VLMEnsureCustomArrow(UIView *host) {
+    VLMSelectionAnchorView *arrow = objc_getAssociatedObject(host, kVLMCustomArrowKey);
+    if (!arrow) {
+        arrow = [[VLMSelectionAnchorView alloc] initWithFrame:CGRectMake(0, 0, kVLMArrowWidth, kVLMArrowHeight)];
+        objc_setAssociatedObject(host, kVLMCustomArrowKey, arrow, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    UIView *parent = host.superview;
+    if (parent && arrow.superview != parent) {
+        [parent addSubview:arrow];
+    }
+    arrow.layer.zPosition = host.layer.zPosition + 10.0;
+    return arrow;
+}
+
+static void VLMRemoveCustomArrow(UIView *host) {
+    UIView *arrow = objc_getAssociatedObject(host, kVLMCustomArrowKey);
+    [arrow removeFromSuperview];
+}
+
 static void VLMPointArrowAtSelection(UIView *host, CGRect selection, BOOL below) {
-    UIView *arrow = VLMFindArrowNear(host);
-    if (!arrow || !arrow.superview || !host.window) {
+    if (!host.superview || !host.window || CGRectIsNull(selection)) {
         return;
     }
 
-    CGRect listInSuper = [arrow.superview convertRect:host.bounds fromView:host];
-    CGFloat targetX = CGRectGetMidX([arrow.superview convertRect:selection fromView:host.window]);
-    CGRect arrowFrame = arrow.frame;
-    CGFloat minX = CGRectGetMinX(listInSuper) + 18.0;
-    CGFloat maxX = CGRectGetMaxX(listInSuper) - 18.0 - arrowFrame.size.width;
+    VLMHideSystemArrowsNear(host);
+    UIView *arrow = VLMEnsureCustomArrow(host);
+    if (!arrow || !arrow.superview) {
+        return;
+    }
+
+    CGRect hostInParent = host.frame;
+    CGFloat targetX = CGRectGetMidX([host.superview convertRect:selection fromView:host.window]);
+    CGFloat minX = CGRectGetMinX(hostInParent) + 22.0;
+    CGFloat maxX = CGRectGetMaxX(hostInParent) - 22.0;
     if (maxX < minX) {
-        minX = CGRectGetMidX(listInSuper) - arrowFrame.size.width / 2.0;
+        minX = CGRectGetMidX(hostInParent);
         maxX = minX;
     }
-    arrowFrame.origin.x = MIN(MAX(targetX - arrowFrame.size.width / 2.0, minX), maxX);
+    CGFloat x = MIN(MAX(targetX, minX), maxX);
+    arrow.bounds = CGRectMake(0, 0, kVLMArrowWidth, kVLMArrowHeight);
+    arrow.transform = below ? CGAffineTransformIdentity : CGAffineTransformMakeScale(1.0, -1.0);
     if (below) {
-        arrowFrame.origin.y = CGRectGetMinY(listInSuper) - arrowFrame.size.height + 2.0;
+        arrow.center = CGPointMake(x, CGRectGetMinY(hostInParent) + 1.0);
     } else {
-        arrowFrame.origin.y = CGRectGetMaxY(listInSuper) - 2.0;
+        arrow.center = CGPointMake(x, CGRectGetMaxY(hostInParent) - 1.0);
     }
-    VLMDisableConstraints(arrow);
     arrow.hidden = NO;
     arrow.alpha = 1;
-    arrow.frame = arrowFrame;
-    arrow.transform = below ? CGAffineTransformIdentity : CGAffineTransformMakeScale(1.0, -1.0);
+    VLMLog(@"custom arrow x=%.1f below=%d selection=%@", x, below, NSStringFromCGRect(selection));
+}
+
+static void VLMRefreshArrow(UIView *host) {
+    if (!host.window) {
+        return;
+    }
+    CGRect selection = VLMSelectionRectInWindow(host.window);
+    if (CGRectIsNull(selection) || selection.size.height < 1.0) {
+        return;
+    }
+    CGRect hostInWindow = [host convertRect:host.bounds toView:host.window];
+    BOOL below = CGRectGetMidY(selection) <= CGRectGetMidY(hostInWindow);
+    VLMPointArrowAtSelection(host, selection, below);
+}
+
+static UIView *VLMFindEditMenuList(UIView *view, NSInteger depth) {
+    static Class listClass;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        listClass = objc_getClass("_UIEditMenuListView");
+    });
+    if (!view || !listClass || depth < 0) {
+        return nil;
+    }
+    if ([view isKindOfClass:listClass]) {
+        return view;
+    }
+    for (UIView *sub in view.subviews) {
+        UIView *found = VLMFindEditMenuList(sub, depth - 1);
+        if (found) {
+            return found;
+        }
+    }
+    return nil;
 }
 
 static BOOL VLMPositionHostNearSelection(UIView *host, CGSize fitted) {
@@ -516,8 +655,7 @@ static BOOL VLMPositionHostNearSelection(UIView *host, CGSize fitted) {
     CGFloat leftInset = kVLMScreenInset;
     CGFloat rightInset = window.bounds.size.width - kVLMScreenInset;
 
-    UIView *arrow = VLMFindArrowNear(host);
-    CGFloat arrowH = arrow ? MAX(CGRectGetHeight(arrow.bounds), 8.0) : 8.0;
+    CGFloat arrowH = kVLMArrowHeight;
     BOOL below = VLMShouldGrowDownward(host);
     if (selection.origin.y < topInset + 72.0) {
         below = YES;
@@ -739,6 +877,7 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     [collectionView layoutIfNeeded];
 
     VLMHidePagingControls(host);
+    VLMRefreshArrow(host);
     objc_setAssociatedObject(host, kVLMApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
@@ -750,7 +889,7 @@ static void VLMDisableConstraints(UIView *view) {
     }
 }
 
-static void VLMWalkMenuParts(UIView *view, UIView *skipA, UIView *skipB, NSMutableArray<UILabel *> *labels, NSMutableArray<UIImageView *> *images) {
+static void VLMWalkMenuParts(UIView *view, UIView *skipA, UIView *skipB, NSMutableArray<UILabel *> *labels, NSMutableArray<UIImageView *> *images, NSMutableArray<UIButton *> *buttons) {
     if (!view || view == skipA || view == skipB) {
         return;
     }
@@ -760,13 +899,24 @@ static void VLMWalkMenuParts(UIView *view, UIView *skipA, UIView *skipB, NSMutab
     if ([view isKindOfClass:[UIImageView class]]) {
         [images addObject:(UIImageView *)view];
     }
+    if (buttons && [view isKindOfClass:[UIButton class]]) {
+        [buttons addObject:(UIButton *)view];
+    }
     for (UIView *sub in view.subviews) {
-        VLMWalkMenuParts(sub, skipA, skipB, labels, images);
+        VLMWalkMenuParts(sub, skipA, skipB, labels, images, buttons);
     }
 }
 
+static NSString *VLMTrimString(NSString *text) {
+    return [text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+}
+
 static NSString *VLMTrimmedText(UILabel *label) {
-    return [label.text stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *text = VLMTrimString(label.text);
+    if (text.length == 0 && label.attributedText.length > 0) {
+        text = VLMTrimString(label.attributedText.string);
+    }
+    return text;
 }
 
 static UILabel *VLMBestTitleLabel(NSArray<UILabel *> *labels) {
@@ -781,6 +931,40 @@ static UILabel *VLMBestTitleLabel(NSArray<UILabel *> *labels) {
         }
     }
     return title;
+}
+
+static NSString *VLMButtonTitle(UIButton *button) {
+    NSString *title = VLMTrimString(button.currentTitle);
+    if (title.length > 0) {
+        return title;
+    }
+    title = VLMTrimString(button.titleLabel.text);
+    if (title.length > 0) {
+        return title;
+    }
+    if (@available(iOS 15.0, *)) {
+        UIButtonConfiguration *config = button.configuration;
+        if (config.attributedTitle.length > 0) {
+            return VLMTrimString(config.attributedTitle.string);
+        }
+        if (config.title.length > 0) {
+            return VLMTrimString(config.title);
+        }
+    }
+    return nil;
+}
+
+static UIImage *VLMButtonImage(UIButton *button) {
+    if (VLMImageIsUsableIcon(button.currentImage)) {
+        return button.currentImage;
+    }
+    if (@available(iOS 15.0, *)) {
+        UIImage *image = button.configuration.image;
+        if (VLMImageIsUsableIcon(image)) {
+            return image;
+        }
+    }
+    return nil;
 }
 
 static BOOL VLMIsBackgroundImageView(UIImageView *imageView, UIView *content) {
@@ -834,6 +1018,7 @@ static UILabel *VLMEnsureTitleSlot(UIView *content) {
         slot.numberOfLines = 1;
         slot.lineBreakMode = NSLineBreakByTruncatingTail;
         slot.textAlignment = NSTextAlignmentLeft;
+        slot.adjustsFontSizeToFitWidth = NO;
         objc_setAssociatedObject(content, kVLMTitleSlotKey, slot, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     return slot;
@@ -854,12 +1039,49 @@ static void VLMHideNativeTitleViews(UIView *view, UIView *skipA, UIView *skipB) 
     if (!view || view == skipA || view == skipB) {
         return;
     }
-    if ([view isKindOfClass:[UILabel class]]) {
+    NSString *name = NSStringFromClass(view.class);
+    if ([view isKindOfClass:[UILabel class]]
+        || [name containsString:@"ButtonLabel"]
+        || [name containsString:@"Configuration"]) {
         view.hidden = YES;
         view.alpha = 0;
+        if ([name containsString:@"Configuration"]) {
+            return;
+        }
+    }
+    if ([view isKindOfClass:[UIImageView class]]) {
+        view.hidden = YES;
+        view.alpha = 0;
+        return;
     }
     for (UIView *sub in view.subviews) {
         VLMHideNativeTitleViews(sub, skipA, skipB);
+    }
+}
+
+static void VLMHideNativeChrome(UIView *view, UIView *skipA, UIView *skipB, UIView *content) {
+    if (!view || view == skipA || view == skipB) {
+        return;
+    }
+    NSString *name = NSStringFromClass(view.class);
+    if ([view isKindOfClass:[UILabel class]]
+        || [name containsString:@"ButtonLabel"]
+        || [name containsString:@"Configuration"]) {
+        view.hidden = YES;
+        view.alpha = 0;
+        if ([name containsString:@"Configuration"]) {
+            return;
+        }
+    }
+    if ([view isKindOfClass:[UIImageView class]]) {
+        if (!VLMIsBackgroundImageView((UIImageView *)view, content)) {
+            view.hidden = YES;
+            view.alpha = 0;
+        }
+        return;
+    }
+    for (UIView *sub in view.subviews) {
+        VLMHideNativeChrome(sub, skipA, skipB, content);
     }
 }
 
@@ -876,8 +1098,8 @@ static void VLMSetFrameFromContent(UIView *view, UIView *content, CGRect rectInC
     view.frame = [content convertRect:rectInContent toView:parent];
 }
 
-static UIImageView *VLMBestNativeIcon(NSArray<UIImageView *> *images, UIImageView *slot, UIView *content) {
-    UIImageView *best = nil;
+static UIImage *VLMBestIconImage(NSArray<UIImageView *> *images, NSArray<UIButton *> *buttons, UIImageView *slot, UIView *content) {
+    UIImage *best = nil;
     CGFloat bestArea = -1.0;
     for (UIImageView *candidate in images) {
         if (candidate == slot || VLMIsBackgroundImageView(candidate, content)) {
@@ -888,24 +1110,34 @@ static UIImageView *VLMBestNativeIcon(NSArray<UIImageView *> *images, UIImageVie
         }
         CGFloat area = candidate.image.size.width * candidate.image.size.height;
         if (area > bestArea) {
-            best = candidate;
+            best = candidate.image;
+            bestArea = area;
+        }
+    }
+    for (UIButton *button in buttons) {
+        UIImage *image = VLMButtonImage(button);
+        if (!VLMImageIsUsableIcon(image)) {
+            continue;
+        }
+        CGFloat area = image.size.width * image.size.height;
+        if (area > bestArea) {
+            best = image;
             bestArea = area;
         }
     }
     return best;
 }
 
-static void VLMCopyTitleAppearance(UILabel *from, UILabel *to) {
-    if (!from || !to) {
-        return;
+static UIColor *VLMBestIconTint(NSArray<UIImageView *> *images, UIImageView *slot, UIView *content, UIColor *fallback) {
+    for (UIImageView *candidate in images) {
+        if (candidate == slot || VLMIsBackgroundImageView(candidate, content)) {
+            continue;
+        }
+        if (VLMImageIsUsableIcon(candidate.image) && candidate.tintColor) {
+            return candidate.tintColor;
+        }
     }
-    to.font = from.font ?: [UIFont systemFontOfSize:17.0];
-    to.textColor = from.textColor ?: UIColor.labelColor;
-    if (from.attributedText.length > 0) {
-        to.attributedText = from.attributedText;
-    } else {
-        to.text = from.text;
-    }
+    return fallback;
 }
 
 static void VLMRelayoutCell(UIView *cell) {
@@ -920,98 +1152,89 @@ static void VLMRelayoutCell(UIView *cell) {
         content = ((UICollectionViewCell *)cell).contentView;
         content.frame = cell.bounds;
         content.clipsToBounds = NO;
+        content.layer.zPosition = 0;
     }
     cell.clipsToBounds = NO;
 
     UIImageView *slot = VLMEnsureFallbackSlot(content);
-    UILabel *titleSlot = objc_getAssociatedObject(content, kVLMTitleSlotKey);
+    UILabel *titleSlot = VLMEnsureTitleSlot(content);
 
     NSMutableArray<UILabel *> *labels = [NSMutableArray array];
     NSMutableArray<UIImageView *> *images = [NSMutableArray array];
-    VLMWalkMenuParts(cell, slot, titleSlot, labels, images);
+    NSMutableArray<UIButton *> *buttons = [NSMutableArray array];
+    VLMWalkMenuParts(cell, slot, titleSlot, labels, images, buttons);
 
     UILabel *title = VLMBestTitleLabel(labels);
-    UIImageView *nativeIcon = VLMBestNativeIcon(images, slot, content);
-
-    CGFloat icon = 22.0;
-    CGFloat left = 16.0;
-    CGFloat gap = 10.0;
-    CGFloat textX = left + icon + gap;
-    CGRect iconRect = CGRectMake(left, (content.bounds.size.height - icon) / 2.0, icon, icon);
-    CGRect titleRect = CGRectMake(textX, 0, MAX(40.0, content.bounds.size.width - textX - 14.0), content.bounds.size.height);
-    UIColor *tint = title.textColor ?: UIColor.labelColor;
-
-    for (UIImageView *candidate in images) {
-        if (candidate == slot || VLMIsBackgroundImageView(candidate, content)) {
-            continue;
+    NSString *titleText = title ? VLMTrimmedText(title) : nil;
+    UIFont *titleFont = title.font;
+    UIColor *titleColor = title.textColor;
+    for (UIButton *button in buttons) {
+        NSString *buttonTitle = VLMButtonTitle(button);
+        if (buttonTitle.length > titleText.length) {
+            titleText = buttonTitle;
         }
-        candidate.hidden = YES;
-        candidate.alpha = 0;
+        if (!titleFont) {
+            titleFont = button.titleLabel.font;
+        }
+        if (!titleColor) {
+            titleColor = button.currentTitleColor ?: button.titleLabel.textColor;
+        }
+        if (buttonTitle.length > 0 && button.accessibilityLabel.length == 0) {
+            button.accessibilityLabel = buttonTitle;
+        }
     }
+    if (titleText.length == 0) {
+        titleText = VLMTrimmedText(titleSlot);
+    }
+
+    UIColor *tint = titleColor ?: UIColor.labelColor;
+    UIImage *iconImage = VLMBestIconImage(images, buttons, slot, content);
+    BOOL usedNativeIcon = VLMImageIsUsableIcon(iconImage);
+    if (!usedNativeIcon) {
+        iconImage = VLMFallbackMenuIcon();
+    }
+    UIColor *iconTint = VLMBestIconTint(images, slot, content, tint);
+
+    CGFloat textX = kVLMIconLeft + kVLMIconSize + kVLMIconTextGap;
+    CGRect iconRect = CGRectMake(kVLMIconLeft, (content.bounds.size.height - kVLMIconSize) / 2.0, kVLMIconSize, kVLMIconSize);
+    CGRect titleRect = CGRectMake(textX, 0, MAX(40.0, content.bounds.size.width - textX - 14.0), content.bounds.size.height);
+
+    objc_setAssociatedObject(cell, kVLMTitleOverlayActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    VLMHideNativeChrome(cell, slot, titleSlot, content);
 
     if (slot.superview != cell) {
         [cell addSubview:slot];
     }
+    if (titleSlot.superview != cell) {
+        [cell addSubview:titleSlot];
+    }
+
     slot.hidden = NO;
     slot.alpha = 1;
     slot.contentMode = UIViewContentModeScaleAspectFit;
-    if (nativeIcon && VLMImageIsUsableIcon(nativeIcon.image)) {
-        slot.image = nativeIcon.image;
-        if (nativeIcon.image.renderingMode == UIImageRenderingModeAlwaysOriginal) {
-            slot.tintColor = nil;
-        } else {
-            slot.tintColor = nativeIcon.tintColor ?: tint;
-        }
+    slot.image = iconImage;
+    if (usedNativeIcon && iconImage.renderingMode == UIImageRenderingModeAlwaysOriginal) {
+        slot.tintColor = nil;
     } else {
-        slot.image = VLMFallbackMenuIcon();
-        slot.tintColor = tint;
+        slot.tintColor = iconTint;
     }
     slot.frame = iconRect;
+    slot.layer.zPosition = 1001;
 
-    BOOL usedFallback = !(nativeIcon && VLMImageIsUsableIcon(nativeIcon.image));
-    BOOL overlayActive = usedFallback && (title || (titleSlot && VLMTrimmedText(titleSlot).length > 0));
-    objc_setAssociatedObject(cell, kVLMTitleOverlayActiveKey, overlayActive ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    titleSlot.hidden = (titleText.length == 0);
+    titleSlot.alpha = titleSlot.hidden ? 0 : 1;
+    titleSlot.attributedText = nil;
+    titleSlot.textAlignment = NSTextAlignmentLeft;
+    titleSlot.numberOfLines = 1;
+    titleSlot.lineBreakMode = NSLineBreakByTruncatingTail;
+    titleSlot.font = titleFont ?: [UIFont systemFontOfSize:17.0];
+    titleSlot.textColor = tint;
+    titleSlot.text = titleText;
+    titleSlot.frame = titleRect;
+    titleSlot.layer.zPosition = 1000;
 
-    if (overlayActive) {
-        titleSlot = VLMEnsureTitleSlot(content);
-        if (titleSlot.superview != cell) {
-            [cell addSubview:titleSlot];
-        }
-        if (title) {
-            VLMCopyTitleAppearance(title, titleSlot);
-        }
-        titleSlot.hidden = NO;
-        titleSlot.alpha = 1;
-        titleSlot.frame = titleRect;
-        VLMHideNativeTitleViews(cell, slot, titleSlot);
-        [cell bringSubviewToFront:titleSlot];
-        [cell bringSubviewToFront:slot];
-        return;
-    }
-
-    if (titleSlot) {
-        titleSlot.hidden = YES;
-        titleSlot.alpha = 0;
-    }
+    [cell bringSubviewToFront:titleSlot];
     [cell bringSubviewToFront:slot];
-
-    NSString *titleText = title ? VLMTrimmedText(title) : nil;
-    for (UILabel *label in labels) {
-        NSString *text = VLMTrimmedText(label);
-        if (label == title) {
-            label.hidden = NO;
-            label.alpha = 1;
-            label.textAlignment = NSTextAlignmentLeft;
-            label.numberOfLines = 1;
-            label.lineBreakMode = NSLineBreakByTruncatingTail;
-            VLMSetFrameFromContent(label, content, titleRect);
-            continue;
-        }
-        if (titleText.length > 0 && [text isEqualToString:titleText]) {
-            label.hidden = YES;
-            label.alpha = 0;
-        }
-    }
 }
 
 static void VLMRelayoutVisibleCells(id host) {
@@ -1031,7 +1254,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
         return NO;
     }
     UIView *current = view;
-    for (NSInteger depth = 0; current && depth < 8; depth++) {
+    for (NSInteger depth = 0; current && depth < 16; depth++) {
         if ([current isKindOfClass:listClass]) {
             return YES;
         }
@@ -1149,7 +1372,11 @@ static BOOL VLMIsInsideEditMenu(id view) {
 
 - (void)didMoveToWindow {
     %orig;
-    if (!VLMEditOn() || !self.window) {
+    if (!self.window) {
+        VLMRemoveCustomArrow(self);
+        return;
+    }
+    if (!VLMEditOn()) {
         return;
     }
     __weak UIView *weakSelf = self;
@@ -1160,6 +1387,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
         }
         VLMApplyVerticalCollectionLayout(strongSelf);
         VLMRelayoutVisibleCells(strongSelf);
+        VLMRefreshArrow(strongSelf);
     });
 }
 
@@ -1210,6 +1438,8 @@ static BOOL VLMIsInsideEditMenu(id view) {
     UIView *titleSlot = objc_getAssociatedObject(content, kVLMTitleSlotKey);
     self.titleLabel.hidden = YES;
     self.titleLabel.alpha = 0;
+    self.imageView.hidden = YES;
+    self.imageView.alpha = 0;
     VLMHideNativeTitleViews(self, slot, titleSlot);
 }
 
@@ -1260,11 +1490,17 @@ static BOOL VLMIsInsideEditMenu(id view) {
 
 - (void)layoutSubviews {
     %orig;
-    if (!VLMEditOn()) {
+    if (!VLMEditOn() || objc_getAssociatedObject(self, kVLMContainerGuardKey)) {
         return;
     }
+    objc_setAssociatedObject(self, kVLMContainerGuardKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     self.clipsToBounds = NO;
     VLMStripShadows(self);
+    UIView *list = VLMFindEditMenuList(self, 4);
+    if (list) {
+        VLMRefreshArrow(list);
+    }
+    objc_setAssociatedObject(self, kVLMContainerGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 %end
