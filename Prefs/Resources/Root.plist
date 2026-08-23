@@ -60,7 +60,7 @@
 			<key>label</key>
 			<string>菜单排序</string>
 			<key>footerText</key>
-			<string>打开后，弹出菜单按你设好的顺序排列。点「调整顺序」可拖动剪切、查找、翻译、搜索网页等项目；没列出来的项会在你弹出过对应菜单后再出现。改完后请注销或划掉正在用的 App。</string>
+			<string>打开后，弹出菜单按你设好的顺序排列。点「调整顺序与隐藏」可拖动项目，或关掉某项的开关来隐藏；隐藏的项不会出现在弹出菜单里。改完后请注销或划掉正在用的 App。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -84,7 +84,7 @@
 			<key>isController</key>
 			<true/>
 			<key>label</key>
-			<string>调整顺序</string>
+			<string>调整顺序与隐藏</string>
 		</dict>
 		<dict>
 			<key>cell</key>

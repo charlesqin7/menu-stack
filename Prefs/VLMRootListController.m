@@ -7,7 +7,7 @@
 extern char **environ;
 
 #ifndef VLM_VERSION
-#define VLM_VERSION "1.0.32"
+#define VLM_VERSION "1.0.33"
 #endif
 
 @interface VLMOrderListController : UIViewController

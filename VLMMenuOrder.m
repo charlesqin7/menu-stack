@@ -3,6 +3,7 @@
 NSString * const VLMMenuOrderKey = @"MenuItemOrder";
 NSString * const VLMCustomOrderKey = @"CustomOrder";
 NSString * const VLMKnownItemsKey = @"KnownMenuItems";
+NSString * const VLMHiddenItemsKey = @"HiddenMenuItems";
 
 static NSString *VLMFold(NSString *text) {
     if (text.length == 0) {
@@ -278,6 +279,28 @@ NSArray<NSString *> *VLMSanitizeOrderIDs(id value) {
         if (![seen containsObject:itemID]) {
             [ids addObject:itemID];
         }
+    }
+    return ids;
+}
+
+NSArray<NSString *> *VLMSanitizeHiddenIDs(id value) {
+    if (![value isKindOfClass:[NSArray class]]) {
+        return @[];
+    }
+    NSMutableArray<NSString *> *ids = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    for (id item in (NSArray *)value) {
+        NSString *itemID = nil;
+        if ([item isKindOfClass:[NSString class]]) {
+            itemID = item;
+        } else if ([item isKindOfClass:[NSDictionary class]]) {
+            itemID = item[@"id"];
+        }
+        if (itemID.length == 0 || [seen containsObject:itemID]) {
+            continue;
+        }
+        [seen addObject:itemID];
+        [ids addObject:itemID];
     }
     return ids;
 }

@@ -64,11 +64,12 @@ layout/Library/PreferenceLoader/Preferences/
 - `Enabled`：总开关，默认开
 - `ContextMenus`：改 compact / palette 上下文菜单
 - `EditMenus`：改拷贝粘贴条
-- `CustomOrder`：按自定义顺序排列菜单项，默认关；在「调整顺序」里拖动后会自动打开
+- `CustomOrder`：按自定义顺序排列菜单项，默认关；在「调整顺序与隐藏」里拖动或隐藏后会自动打开
 - `MenuItemOrder`：菜单项 ID 数组，决定弹出顺序
+- `HiddenMenuItems`：被隐藏的菜单项 ID，弹出菜单里不显示
 - `Debug`：NSLog 前缀 `[VerticalMenu]`
 
-在设置里打开「调整顺序」，按住右边横条拖动剪切、拷贝、粘贴、全选等项目。当前菜单里没有的项会被跳过，没出现在列表里的项排在后面。
+在设置里打开「调整顺序与隐藏」，按住右边横条拖动顺序，或关掉某项的开关来隐藏。隐藏的项不会出现在弹出菜单里。当前菜单里没有的项会被跳过，没出现在列表里的项排在后面。
 
 改开关或排序后点「注销 SpringBoard」，并且把目标 App 从多任务里划掉再开，注入才会进新进程。
 
@@ -129,6 +130,10 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 2. 打开调试日志，完全杀掉 App 再开，看是否出现 `[VerticalMenu] loaded in <bundle id>`。没有日志就是没注入（ElleKit 过滤、未 respring、装到了错误的 scheme）。
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
+
+## 更新（1.0.33）
+
+- 「调整顺序与隐藏」可为每个菜单项关闭显示；隐藏的项不会出现在弹出菜单里。
 
 ## 更新（1.0.32）
 

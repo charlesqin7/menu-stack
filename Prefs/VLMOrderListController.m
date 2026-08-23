@@ -1,12 +1,15 @@
 #import "VLMOrderListController.h"
 #import "../VLMMenuOrder.h"
+#import <objc/runtime.h>
 
 static NSString * const kVLMPrefsID = @"com.qins.verticalmenu";
 static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadPrefs";
+static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
 
 @implementation VLMOrderListController {
     UITableView *_tableView;
     NSMutableArray<NSString *> *_order;
+    NSMutableSet<NSString *> *_hidden;
     NSDictionary<NSString *, NSString *> *_labels;
 }
 
@@ -14,6 +17,7 @@ static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadP
     self = [super init];
     if (self) {
         self.title = @"菜单排序";
+        _hidden = [NSMutableSet set];
     }
     return self;
 }
@@ -31,8 +35,8 @@ static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadP
     _tableView.delegate = self;
     _tableView.dataSource = self;
     _tableView.editing = YES;
-    _tableView.allowsSelectionDuringEditing = NO;
-    _tableView.allowsSelection = NO;
+    _tableView.allowsSelectionDuringEditing = YES;
+    _tableView.allowsSelection = YES;
     self.view = _tableView;
 }
 
@@ -79,6 +83,7 @@ static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadP
 - (void)reloadFromPrefs {
     NSDictionary *prefs = [self prefsDictionary];
     _order = [VLMSanitizeOrderIDs(prefs[VLMMenuOrderKey]) mutableCopy];
+    _hidden = [NSMutableSet setWithArray:VLMSanitizeHiddenIDs(prefs[VLMHiddenItemsKey])];
 
     NSMutableDictionary<NSString *, NSString *> *labels = [NSMutableDictionary dictionary];
     for (NSString *itemID in VLMDefaultOrderIDs()) {
@@ -107,9 +112,10 @@ static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadP
     [_tableView reloadData];
 }
 
-- (void)writeOrderAndEnableCustomSort:(BOOL)enableCustomSort {
+- (void)writePrefsAndEnableCustomSort:(BOOL)enableCustomSort {
     CFStringRef ident = (__bridge CFStringRef)kVLMPrefsID;
     CFPreferencesSetAppValue((__bridge CFStringRef)VLMMenuOrderKey, (__bridge CFArrayRef)_order, ident);
+    CFPreferencesSetAppValue((__bridge CFStringRef)VLMHiddenItemsKey, (__bridge CFArrayRef)_hidden.allObjects, ident);
     if (enableCustomSort) {
         CFPreferencesSetAppValue((__bridge CFStringRef)VLMCustomOrderKey, kCFBooleanTrue, ident);
     }
@@ -125,7 +131,35 @@ static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadP
 
 - (void)resetOrder {
     _order = [VLMDefaultOrderIDs() mutableCopy];
-    [self writeOrderAndEnableCustomSort:NO];
+    [_hidden removeAllObjects];
+    [self writePrefsAndEnableCustomSort:NO];
+    [_tableView reloadData];
+}
+
+- (void)toggleHiddenForItemID:(NSString *)itemID {
+    if (itemID.length == 0) {
+        return;
+    }
+    if ([_hidden containsObject:itemID]) {
+        [_hidden removeObject:itemID];
+    } else {
+        [_hidden addObject:itemID];
+    }
+    [self writePrefsAndEnableCustomSort:YES];
+    [_tableView reloadData];
+}
+
+- (void)visibilitySwitchChanged:(UISwitch *)toggle {
+    NSString *itemID = objc_getAssociatedObject(toggle, kVLMSwitchItemIDKey);
+    if (itemID.length == 0) {
+        return;
+    }
+    if (toggle.on) {
+        [_hidden removeObject:itemID];
+    } else {
+        [_hidden addObject:itemID];
+    }
+    [self writePrefsAndEnableCustomSort:YES];
     [_tableView reloadData];
 }
 
@@ -138,19 +172,35 @@ static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadP
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return @"按住右边横条拖动调整顺序。列表包含常用项；弹出过但这里没有的项目，下次打开本页时会补上。当前菜单里没有的项会被跳过。改完后请注销或划掉正在用的 App 再打开。";
+    return @"按住右边横条拖动调整顺序。关闭某项右边的开关即可隐藏，隐藏的项不会出现在弹出菜单里。列表包含常用项；弹出过但这里没有的项目，下次打开本页时会补上。改完后请注销或划掉正在用的 App 再打开。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     static NSString *identifier = @"VLMOrderCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
     if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:identifier];
+        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:identifier];
         cell.selectionStyle = UITableViewCellSelectionStyleNone;
     }
     NSString *itemID = _order[indexPath.row];
+    BOOL hidden = [_hidden containsObject:itemID];
     cell.textLabel.text = _labels[itemID] ?: VLMLabelForItemID(itemID) ?: itemID;
+    cell.detailTextLabel.text = hidden ? @"已隐藏，弹出菜单中不显示" : @"显示";
+    cell.textLabel.textColor = hidden ? [UIColor secondaryLabelColor] : [UIColor labelColor];
+    cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+
+    UISwitch *toggle = [[UISwitch alloc] init];
+    toggle.on = !hidden;
+    objc_setAssociatedObject(toggle, kVLMSwitchItemIDKey, itemID, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    [toggle addTarget:self action:@selector(visibilitySwitchChanged:) forControlEvents:UIControlEventValueChanged];
+    cell.editingAccessoryView = toggle;
+    cell.accessoryView = toggle;
     return cell;
+}
+
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    [self toggleHiddenForItemID:_order[indexPath.row]];
 }
 
 - (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -172,7 +222,7 @@ static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadP
     NSString *itemID = _order[sourceIndexPath.row];
     [_order removeObjectAtIndex:sourceIndexPath.row];
     [_order insertObject:itemID atIndex:destinationIndexPath.row];
-    [self writeOrderAndEnableCustomSort:YES];
+    [self writePrefsAndEnableCustomSort:YES];
 }
 
 @end
