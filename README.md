@@ -125,6 +125,10 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
 
+## 更新（1.0.15）
+
+- 「粘贴」用 cell 最上层的独立标题，系统按钮里原来的文字藏掉，避免图标和「粘贴」叠在一起。剪切/拷贝仍用系统标题。
+
 ## 更新（1.0.14）
 
 - 「粘贴」默认图标出现后，把该行文字推到图标右侧，避免叠在图标上。剪切/拷贝不改。

@@ -97,6 +97,8 @@ static const void *kVLMLayoutGuardKey = &kVLMLayoutGuardKey;
 static const void *kVLMLoggedLayoutKey = &kVLMLoggedLayoutKey;
 static const void *kVLMGrowDownKey = &kVLMGrowDownKey;
 static const void *kVLMFallbackIconKey = &kVLMFallbackIconKey;
+static const void *kVLMTitleSlotKey = &kVLMTitleSlotKey;
+static const void *kVLMTitleOverlayActiveKey = &kVLMTitleOverlayActiveKey;
 
 static BOOL VLMNameLooksLikeArrow(UIView *view);
 static void VLMDisableConstraints(UIView *view);
@@ -748,8 +750,8 @@ static void VLMDisableConstraints(UIView *view) {
     }
 }
 
-static void VLMWalkMenuParts(UIView *view, UIView *skip, NSMutableArray<UILabel *> *labels, NSMutableArray<UIImageView *> *images) {
-    if (!view || view == skip) {
+static void VLMWalkMenuParts(UIView *view, UIView *skipA, UIView *skipB, NSMutableArray<UILabel *> *labels, NSMutableArray<UIImageView *> *images) {
+    if (!view || view == skipA || view == skipB) {
         return;
     }
     if ([view isKindOfClass:[UILabel class]]) {
@@ -759,7 +761,7 @@ static void VLMWalkMenuParts(UIView *view, UIView *skip, NSMutableArray<UILabel 
         [images addObject:(UIImageView *)view];
     }
     for (UIView *sub in view.subviews) {
-        VLMWalkMenuParts(sub, skip, labels, images);
+        VLMWalkMenuParts(sub, skipA, skipB, labels, images);
     }
 }
 
@@ -817,9 +819,48 @@ static UIImageView *VLMEnsureFallbackSlot(UIView *content) {
         slot = [[UIImageView alloc] init];
         slot.userInteractionEnabled = NO;
         slot.contentMode = UIViewContentModeScaleAspectFit;
+        slot.isAccessibilityElement = NO;
         objc_setAssociatedObject(content, kVLMFallbackIconKey, slot, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     return slot;
+}
+
+static UILabel *VLMEnsureTitleSlot(UIView *content) {
+    UILabel *slot = objc_getAssociatedObject(content, kVLMTitleSlotKey);
+    if (!slot) {
+        slot = [[UILabel alloc] init];
+        slot.userInteractionEnabled = NO;
+        slot.isAccessibilityElement = NO;
+        slot.numberOfLines = 1;
+        slot.lineBreakMode = NSLineBreakByTruncatingTail;
+        slot.textAlignment = NSTextAlignmentLeft;
+        objc_setAssociatedObject(content, kVLMTitleSlotKey, slot, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return slot;
+}
+
+static UIView *VLMEnclosingCollectionCell(UIView *view) {
+    UIView *current = view;
+    while (current) {
+        if ([current isKindOfClass:[UICollectionViewCell class]]) {
+            return current;
+        }
+        current = current.superview;
+    }
+    return nil;
+}
+
+static void VLMHideNativeTitleViews(UIView *view, UIView *skipA, UIView *skipB) {
+    if (!view || view == skipA || view == skipB) {
+        return;
+    }
+    if ([view isKindOfClass:[UILabel class]]) {
+        view.hidden = YES;
+        view.alpha = 0;
+    }
+    for (UIView *sub in view.subviews) {
+        VLMHideNativeTitleViews(sub, skipA, skipB);
+    }
 }
 
 static void VLMSetFrameFromContent(UIView *view, UIView *content, CGRect rectInContent) {
@@ -854,37 +895,17 @@ static UIImageView *VLMBestNativeIcon(NSArray<UIImageView *> *images, UIImageVie
     return best;
 }
 
-static UIButton *VLMEnclosingButton(UIView *view, UIView *stop) {
-    UIView *current = view;
-    while (current && current != stop) {
-        if ([current isKindOfClass:[UIButton class]]) {
-            return (UIButton *)current;
-        }
-        current = current.superview;
-    }
-    return nil;
-}
-
-static void VLMIndentButtonTitle(UIButton *button, UIView *cell, CGFloat textX, CGFloat width) {
-    if (!button) {
+static void VLMCopyTitleAppearance(UILabel *from, UILabel *to) {
+    if (!from || !to) {
         return;
     }
-    CGFloat leading = [button convertPoint:CGPointMake(textX, 0) fromView:cell].x;
-    if (leading < 8.0 || leading > width - 40.0) {
-        leading = textX;
+    to.font = from.font ?: [UIFont systemFontOfSize:17.0];
+    to.textColor = from.textColor ?: UIColor.labelColor;
+    if (from.attributedText.length > 0) {
+        to.attributedText = from.attributedText;
+    } else {
+        to.text = from.text;
     }
-    if (@available(iOS 15.0, *)) {
-        UIButtonConfiguration *config = button.configuration;
-        if (config) {
-            UIButtonConfiguration *updated = [config copy];
-            NSDirectionalEdgeInsets insets = updated.contentInsets;
-            insets.leading = leading;
-            updated.contentInsets = insets;
-            button.configuration = updated;
-            return;
-        }
-    }
-    button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
 }
 
 static void VLMRelayoutCell(UIView *cell) {
@@ -903,10 +924,11 @@ static void VLMRelayoutCell(UIView *cell) {
     cell.clipsToBounds = NO;
 
     UIImageView *slot = VLMEnsureFallbackSlot(content);
+    UILabel *titleSlot = objc_getAssociatedObject(content, kVLMTitleSlotKey);
 
     NSMutableArray<UILabel *> *labels = [NSMutableArray array];
     NSMutableArray<UIImageView *> *images = [NSMutableArray array];
-    VLMWalkMenuParts(cell, slot, labels, images);
+    VLMWalkMenuParts(cell, slot, titleSlot, labels, images);
 
     UILabel *title = VLMBestTitleLabel(labels);
     UIImageView *nativeIcon = VLMBestNativeIcon(images, slot, content);
@@ -930,7 +952,6 @@ static void VLMRelayoutCell(UIView *cell) {
     if (slot.superview != cell) {
         [cell addSubview:slot];
     }
-    [cell bringSubviewToFront:slot];
     slot.hidden = NO;
     slot.alpha = 1;
     slot.contentMode = UIViewContentModeScaleAspectFit;
@@ -948,12 +969,31 @@ static void VLMRelayoutCell(UIView *cell) {
     slot.frame = iconRect;
 
     BOOL usedFallback = !(nativeIcon && VLMImageIsUsableIcon(nativeIcon.image));
-    if (usedFallback && title) {
-        UIButton *button = VLMEnclosingButton(title, cell);
-        if (button) {
-            VLMIndentButtonTitle(button, cell, textX, width);
+    BOOL overlayActive = usedFallback && (title || (titleSlot && VLMTrimmedText(titleSlot).length > 0));
+    objc_setAssociatedObject(cell, kVLMTitleOverlayActiveKey, overlayActive ? @YES : nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+    if (overlayActive) {
+        titleSlot = VLMEnsureTitleSlot(content);
+        if (titleSlot.superview != cell) {
+            [cell addSubview:titleSlot];
         }
+        if (title) {
+            VLMCopyTitleAppearance(title, titleSlot);
+        }
+        titleSlot.hidden = NO;
+        titleSlot.alpha = 1;
+        titleSlot.frame = titleRect;
+        VLMHideNativeTitleViews(cell, slot, titleSlot);
+        [cell bringSubviewToFront:titleSlot];
+        [cell bringSubviewToFront:slot];
+        return;
     }
+
+    if (titleSlot) {
+        titleSlot.hidden = YES;
+        titleSlot.alpha = 0;
+    }
+    [cell bringSubviewToFront:slot];
 
     NSString *titleText = title ? VLMTrimmedText(title) : nil;
     for (UILabel *label in labels) {
@@ -1149,6 +1189,34 @@ static BOOL VLMIsInsideEditMenu(id view) {
 
 %end
 
+%group EditMenuButtons
+
+%hook UIButton
+
+- (void)layoutSubviews {
+    %orig;
+    if (!VLMEditOn() || !VLMIsInsideEditMenu(self)) {
+        return;
+    }
+    UIView *cell = VLMEnclosingCollectionCell(self);
+    if (!cell || !objc_getAssociatedObject(cell, kVLMTitleOverlayActiveKey)) {
+        return;
+    }
+    UIView *content = cell;
+    if ([cell isKindOfClass:[UICollectionViewCell class]]) {
+        content = ((UICollectionViewCell *)cell).contentView;
+    }
+    UIView *slot = objc_getAssociatedObject(content, kVLMFallbackIconKey);
+    UIView *titleSlot = objc_getAssociatedObject(content, kVLMTitleSlotKey);
+    self.titleLabel.hidden = YES;
+    self.titleLabel.alpha = 0;
+    VLMHideNativeTitleViews(self, slot, titleSlot);
+}
+
+%end
+
+%end
+
 %group EditMenuCollectionView
 
 %hook UICollectionView
@@ -1227,6 +1295,7 @@ static void VLMPrefsChanged(CFNotificationCenterRef center, void *observer, CFSt
     if (objc_getClass("_UIEditMenuListView")) {
         %init(EditMenuList);
         %init(EditMenuCells);
+        %init(EditMenuButtons);
         %init(EditMenuCollectionView);
         hookedList = YES;
     }
