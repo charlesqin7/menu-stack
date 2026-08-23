@@ -885,7 +885,6 @@ static void VLMIndentButtonTitle(UIButton *button, UIView *cell, CGFloat textX, 
         }
     }
     button.contentHorizontalAlignment = UIControlContentHorizontalAlignmentLeft;
-    button.titleEdgeInsets = UIEdgeInsetsMake(0, leading, 0, 8.0);
 }
 
 static void VLMRelayoutCell(UIView *cell) {
