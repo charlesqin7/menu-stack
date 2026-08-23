@@ -232,9 +232,17 @@ NSArray *VLMRulesApplyToItems(NSArray *items,
 
 static void VLMRulesAppendItem(NSMutableArray<NSDictionary *> *items,
                                NSMutableSet<NSString *> *seen,
-                               id value) {
-    NSString *itemID = VLMRulesExtractItemID(value);
-    NSString *title = [value isKindOfClass:[NSDictionary class]] ? (value[@"title"] ?: value[@"label"]) : nil;
+                               id value,
+                               NSArray<NSDictionary *> *catalog) {
+    NSString *itemID = nil;
+    NSString *title = nil;
+    if ([value isKindOfClass:[NSDictionary class]]) {
+        itemID = value[@"id"];
+        title = value[@"title"] ?: value[@"label"];
+    } else if ([value isKindOfClass:[NSString class]]) {
+        title = value;
+        itemID = VLMRulesCatalogIDForTitle(catalog, title) ?: [@"custom:" stringByAppendingString:title];
+    }
     if (itemID.length == 0 || [seen containsObject:itemID] || VLMRulesIsCapturedJunkItem(title, itemID)) {
         return;
     }
@@ -250,10 +258,10 @@ NSDictionary *VLMRulesNormalizedGlobalRule(NSDictionary *rule, NSArray<NSDiction
     NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
     NSMutableSet<NSString *> *seen = [NSMutableSet set];
     for (NSDictionary *item in catalog) {
-        VLMRulesAppendItem(items, seen, item);
+        VLMRulesAppendItem(items, seen, item, catalog);
     }
     for (id item in [source[@"items"] isKindOfClass:[NSArray class]] ? source[@"items"] : @[]) {
-        VLMRulesAppendItem(items, seen, item);
+        VLMRulesAppendItem(items, seen, item, catalog);
     }
 
     NSMutableArray<NSString *> *order = [NSMutableArray array];
@@ -310,14 +318,14 @@ static NSDictionary *VLMRulesRuleByMergingProfiles(NSString *kind,
     NSDictionary *customSource = nil;
     NSTimeInterval newest = -1;
     for (NSDictionary *item in catalog) {
-        VLMRulesAppendItem(items, seen, item);
+        VLMRulesAppendItem(items, seen, item, catalog);
     }
     for (NSDictionary *profile in profiles) {
         if (![profile[@"kind"] isEqualToString:kind]) {
             continue;
         }
         for (NSDictionary *item in [profile[@"items"] isKindOfClass:[NSArray class]] ? profile[@"items"] : @[]) {
-            VLMRulesAppendItem(items, seen, item);
+            VLMRulesAppendItem(items, seen, item, catalog);
         }
         for (NSString *itemID in VLMRulesUniqueIDs(profile[@"hidden"])) {
             if (![seenHidden containsObject:itemID]) {

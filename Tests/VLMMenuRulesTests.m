@@ -35,6 +35,16 @@ static void TestCustomItemIDs(void) {
     VLMAssert(VLMRulesItemIDForTitle(catalog, @"   ") == nil, @"rejects an empty custom title");
 }
 
+static void TestLegacyRuleItems(void) {
+    NSDictionary *rule = VLMRulesNormalizedGlobalRule(@{
+        @"items": @[@"我的操作", @"MD清单"],
+        @"order": @[@"custom:我的操作", @"copy"],
+    }, VLMCatalogItems());
+    NSArray<NSString *> *itemIDs = [rule[@"items"] valueForKey:@"id"];
+    VLMAssert([itemIDs containsObject:@"custom:我的操作"], @"normalizes a legacy string item");
+    VLMAssert(![itemIDs containsObject:@"custom:MD清单"], @"filters a polluted legacy string item");
+}
+
 static void TestEffectiveRules(void) {
     NSDictionary *global = @{
         @"order": @[@"copy", @"paste", @"share"],
@@ -184,6 +194,7 @@ int main(void) {
     @autoreleasepool {
         TestCatalogMatching();
         TestCustomItemIDs();
+        TestLegacyRuleItems();
         TestEffectiveRules();
         TestLegacyProfileMerge();
         TestMigration();
