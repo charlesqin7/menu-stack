@@ -798,6 +798,7 @@ static const void *kVLMLastCellSizeKey = &kVLMLastCellSizeKey;
 static const void *kVLMLastCellIdentityKey = &kVLMLastCellIdentityKey;
 static const void *kVLMManagedCellKey = &kVLMManagedCellKey;
 static const void *kVLMCellRetryKey = &kVLMCellRetryKey;
+static const void *kVLMAlignedIconLeftKey = &kVLMAlignedIconLeftKey;
 static const void *kVLMCollectionKey = &kVLMCollectionKey;
 static const void *kVLMViewportSizeKey = &kVLMViewportSizeKey;
 static const void *kVLMDumpedKey = &kVLMDumpedKey;
@@ -1983,8 +1984,9 @@ static void VLMConfigureCollectionPhysics(UICollectionView *collectionView, NSIn
     collectionView.pagingEnabled = NO;
     collectionView.scrollEnabled = YES;
     collectionView.directionalLockEnabled = YES;
+    collectionView.bounces = NO;
     collectionView.alwaysBounceHorizontal = NO;
-    collectionView.alwaysBounceVertical = (visibleCount > kVLMVisibleRows);
+    collectionView.alwaysBounceVertical = NO;
     collectionView.decelerationRate = UIScrollViewDecelerationRateNormal;
     collectionView.delaysContentTouches = NO;
     collectionView.canCancelContentTouches = YES;
@@ -2345,18 +2347,49 @@ static CGFloat VLMAlignedIconLeft(UIView *cell) {
     if (!list) {
         return kVLMIconLeft + kVLMPageGutter;
     }
+    NSNumber *cached = objc_getAssociatedObject(list, kVLMAlignedIconLeftKey);
+    if ([cached isKindOfClass:[NSNumber class]]) {
+        return cached.doubleValue;
+    }
     CGFloat cellMinX = [cell convertPoint:CGPointZero toView:list].x;
     if (cellMinX != cellMinX || fabs(cellMinX) > 500.0) {
         return kVLMIconLeft + kVLMPageGutter;
     }
     CGFloat iconLeft = (kVLMPageGutter + kVLMIconLeft) - cellMinX;
     if (iconLeft < 8.0) {
-        return 8.0;
+        iconLeft = 8.0;
     }
     if (iconLeft > 48.0) {
-        return 48.0;
+        iconLeft = 48.0;
+    }
+    UICollectionView *collectionView = VLMCollectionViewInHost(list);
+    BOOL settled = objc_getAssociatedObject(list, kVLMSetupDoneKey) != nil;
+    if (settled && !VLMCollectionViewIsScrolling(collectionView)) {
+        objc_setAssociatedObject(list, kVLMAlignedIconLeftKey, @(iconLeft), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     return iconLeft;
+}
+
+static void VLMConcealNativeCellParts(UIView *cell,
+                                      UIView *content,
+                                      UIImageView *slot,
+                                      UILabel *titleSlot) {
+    NSMutableArray<UILabel *> *labels = [NSMutableArray array];
+    NSMutableArray<UIImageView *> *images = [NSMutableArray array];
+    NSMutableArray<UIButton *> *buttons = [NSMutableArray array];
+    VLMWalkMenuParts(cell, slot, titleSlot, labels, images, buttons);
+    for (UILabel *label in labels) {
+        label.alpha = 0;
+    }
+    for (UIImageView *imageView in images) {
+        if (!VLMIsBackgroundImageView(imageView, content)) {
+            imageView.alpha = 0;
+        }
+    }
+    for (UIButton *button in buttons) {
+        button.titleLabel.alpha = 0;
+        button.imageView.alpha = 0;
+    }
 }
 
 static void VLMFadeNativeLabels(UIView *view, UIView *skipA, UIView *skipB) {
@@ -2514,6 +2547,10 @@ static void VLMRelayoutCell(UIView *cell) {
 
     UIImageView *slot = VLMEnsureFallbackSlot(content);
     UILabel *titleSlot = VLMEnsureTitleSlot(content);
+    // UIKit may materialize or restore a button's native label after the first
+    // cell pass. Enforce concealment before the cached fast path as well, so
+    // the native title cannot reappear beside the overlay title.
+    VLMConcealNativeCellParts(cell, content, slot, titleSlot);
 
     NSValue *lastSizeValue = objc_getAssociatedObject(cell, kVLMLastCellSizeKey);
     NSString *lastIdentity = objc_getAssociatedObject(cell, kVLMLastCellIdentityKey);
@@ -2528,6 +2565,8 @@ static void VLMRelayoutCell(UIView *cell) {
         CGFloat textX = iconLeft + kVLMIconSize + kVLMIconTextGap;
         slot.frame = CGRectMake(iconLeft, (content.bounds.size.height - kVLMIconSize) / 2.0, kVLMIconSize, kVLMIconSize);
         titleSlot.frame = CGRectMake(textX, 0, MAX(40.0, content.bounds.size.width - textX - 14.0), content.bounds.size.height);
+        slot.layer.zPosition = 20;
+        titleSlot.layer.zPosition = 20;
         objc_setAssociatedObject(cell, kVLMCellGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
@@ -3034,6 +3073,7 @@ static const void *kVLMEditDelegateProxyKey = &kVLMEditDelegateProxyKey;
     if (previous < 0.9 && alpha >= 0.9) {
         objc_setAssociatedObject(self, kVLMGrowDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, kVLMViewportSizeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, kVLMAlignedIconLeftKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         CGSize fitted = VLMVerticalFittingSize(self, self.bounds.size);
         VLMPositionHostNearSelection(self, fitted);
         VLMKeepOnScreen(self);
@@ -3070,6 +3110,7 @@ static const void *kVLMEditDelegateProxyKey = &kVLMEditDelegateProxyKey;
         objc_setAssociatedObject(self, kVLMSetupDoneKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, kVLMCollectionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, kVLMViewportSizeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self, kVLMAlignedIconLeftKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, kVLMDumpedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, kVLMDumpedVisibleKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, kVLMRememberDebounceKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -3146,6 +3187,20 @@ static const void *kVLMEditDelegateProxyKey = &kVLMEditDelegateProxyKey;
 %group EditMenuCollectionView
 
 %hook UICollectionView
+
+- (void)setBounces:(BOOL)bounces {
+    if (VLMEditOn() && [self.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]]) {
+        bounces = NO;
+    }
+    %orig(bounces);
+}
+
+- (void)setAlwaysBounceVertical:(BOOL)bounce {
+    if (VLMEditOn() && [self.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]]) {
+        bounce = NO;
+    }
+    %orig(bounce);
+}
 
 - (void)setPagingEnabled:(BOOL)paging {
     if (VLMEditOn() && [self.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]]) {
