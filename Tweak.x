@@ -564,6 +564,24 @@ static void VLMSetFrameInWindow(UIView *view, CGRect windowFrame) {
     view.frame = local;
 }
 
+static UIColor *VLMMenuBackgroundColor(void) {
+    static UIColor *color;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        if (@available(iOS 13.0, *)) {
+            color = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *trait) {
+                if (trait.userInterfaceStyle == UIUserInterfaceStyleDark) {
+                    return [UIColor colorWithWhite:0.17 alpha:1.0];
+                }
+                return [UIColor colorWithWhite:0.98 alpha:1.0];
+            }];
+        } else {
+            color = [UIColor colorWithWhite:0.98 alpha:1.0];
+        }
+    });
+    return color;
+}
+
 static void VLMMaskViewToRect(UIView *view, CGRect rectInView) {
     if (!view || rectInView.size.width < 8.0 || rectInView.size.height < 8.0) {
         return;
@@ -573,10 +591,26 @@ static void VLMMaskViewToRect(UIView *view, CGRect rectInView) {
         mask = [CAShapeLayer layer];
         mask.fillColor = [UIColor blackColor].CGColor;
         objc_setAssociatedObject(view, kVLMChromeMaskKey, mask, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (view.layer.mask != mask) {
         view.layer.mask = mask;
     }
     CGRect inset = CGRectInset(rectInView, -2.0, -2.0);
     mask.path = [UIBezierPath bezierPathWithRoundedRect:inset cornerRadius:14.0].CGPath;
+}
+
+static UIView *VLMContainerAncestor(UIView *host) {
+    UIView *current = host.superview;
+    for (NSInteger depth = 0; current && depth < 8; depth++) {
+        if ([current isKindOfClass:[UIWindow class]]) {
+            return nil;
+        }
+        if ([NSStringFromClass(current.class) containsString:@"EditMenuContainer"]) {
+            return current;
+        }
+        current = current.superview;
+    }
+    return nil;
 }
 
 static void VLMConcealStaleChrome(UIView *host) {
@@ -585,26 +619,18 @@ static void VLMConcealStaleChrome(UIView *host) {
         return;
     }
 
-    parent.backgroundColor = [UIColor clearColor];
-    parent.opaque = NO;
-    VLMClearLayerShadow(parent.layer);
-
     CGRect maskRect = host.frame;
     UIView *arrow = objc_getAssociatedObject(host, kVLMCustomArrowKey);
     if (arrow && arrow.superview == parent && !CGRectIsEmpty(arrow.frame)) {
         maskRect = CGRectUnion(maskRect, arrow.frame);
     }
-    VLMMaskViewToRect(parent, maskRect);
 
-    UIView *grand = parent.superview;
-    if (grand && ![grand isKindOfClass:[UIWindow class]]) {
-        NSString *name = NSStringFromClass(grand.class);
-        if ([name containsString:@"EditMenu"] || [name containsString:@"Presentation"] || [name containsString:@"Container"]) {
-            grand.backgroundColor = [UIColor clearColor];
-            grand.opaque = NO;
-            VLMClearLayerShadow(grand.layer);
-            VLMMaskViewToRect(grand, [grand convertRect:maskRect fromView:parent]);
-        }
+    UIView *container = VLMContainerAncestor(host);
+    if (container) {
+        VLMMaskViewToRect(container, [container convertRect:maskRect fromView:parent]);
+    }
+    if (parent != container) {
+        VLMMaskViewToRect(parent, maskRect);
     }
 }
 
@@ -975,6 +1001,8 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     }
     collectionView.contentInset = UIEdgeInsetsZero;
     collectionView.scrollIndicatorInsets = UIEdgeInsetsZero;
+    collectionView.backgroundColor = VLMMenuBackgroundColor();
+    collectionView.layer.cornerRadius = 14.0;
     if (!VLMFramesClose(collectionView.frame, host.bounds)) {
         collectionView.frame = host.bounds;
     }
@@ -1127,16 +1155,7 @@ static UIView *VLMEnsureCover(UIView *content) {
         cover = [[UIView alloc] init];
         cover.userInteractionEnabled = NO;
         cover.isAccessibilityElement = NO;
-        if (@available(iOS 13.0, *)) {
-            cover.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *trait) {
-                if (trait.userInterfaceStyle == UIUserInterfaceStyleDark) {
-                    return [UIColor colorWithWhite:0.21 alpha:1.0];
-                }
-                return [UIColor colorWithWhite:1.0 alpha:1.0];
-            }];
-        } else {
-            cover.backgroundColor = [UIColor whiteColor];
-        }
+        cover.backgroundColor = VLMMenuBackgroundColor();
         objc_setAssociatedObject(content, kVLMCoverKey, cover, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     return cover;

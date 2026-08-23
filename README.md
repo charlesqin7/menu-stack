@@ -125,6 +125,10 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
 
+## 更新（1.0.22）
+
+- 菜单背后不再露出黑色/灰色残底：竖列表自己画圆角背景，残余的系统底板整体裁掉（裁切挂在最外层容器上，之前挂错层所以没生效）。
+
 ## 更新（1.0.21）
 
 - 修复 1.0.20 弹出菜单后卡死：不再改系统容器的大小。
