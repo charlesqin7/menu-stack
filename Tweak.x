@@ -50,16 +50,11 @@ static BOOL gEnabled = YES;
 static BOOL gContextMenus = YES;
 static BOOL gEditMenus = YES;
 static BOOL gDebug = NO;
-static NSArray<NSDictionary *> *gProfiles;
-static NSDictionary<NSString *, NSDictionary *> *gProfilesByID;
-static NSSet<NSString *> *gLegacyHidden;
-static NSArray<NSString *> *gGlobalEditOrder;
-static NSArray<NSString *> *gGlobalContextOrder;
-static NSSet<NSString *> *gGlobalEditHidden;
-static NSSet<NSString *> *gGlobalContextHidden;
-static BOOL gGlobalEditCustom = NO;
-static BOOL gGlobalContextCustom = NO;
-static NSInteger gVLMReadingOriginalMenu = 0;
+static NSArray<NSDictionary *> *gRegistry;
+static NSDictionary<NSString *, NSDictionary *> *gRegistryByID;
+static NSDictionary *gResolvedEditPolicy;
+static NSDictionary *gResolvedContextPolicy;
+static const void *kVLMDeferredKindKey = &kVLMDeferredKindKey;
 
 #define VLMLog(fmt, ...) do { \
     if (gDebug) NSLog(@"[VerticalMenu] " fmt, ##__VA_ARGS__); \
@@ -84,24 +79,19 @@ static void VLMLoadPrefs(void) {
     gEditMenus = VLMBool(dict, @"EditMenus", YES);
     gDebug = VLMBool(dict, @"Debug", NO);
     VLMSetDebugLoggingEnabled(gDebug);
-    gProfiles = [VLMSanitizeProfiles(dict[VLMMenuProfilesKey]) copy];
-    NSMutableDictionary<NSString *, NSDictionary *> *profileIndex = [NSMutableDictionary dictionaryWithCapacity:gProfiles.count];
-    for (NSDictionary *profile in gProfiles) {
-        NSString *profileID = profile[@"id"];
-        if (profileID.length > 0) {
-            profileIndex[profileID] = profile;
+    gRegistry = [dict[VLMMenuRegistryKey] isKindOfClass:[NSArray class]]
+        ? [dict[VLMMenuRegistryKey] copy] : @[];
+    NSMutableDictionary<NSString *, NSDictionary *> *registryIndex = [NSMutableDictionary dictionaryWithCapacity:gRegistry.count];
+    for (NSDictionary *record in gRegistry) {
+        NSString *recordID = record[@"id"];
+        if (recordID.length > 0) {
+            registryIndex[recordID] = record;
         }
     }
-    gProfilesByID = [profileIndex copy];
-    gLegacyHidden = [NSSet setWithArray:VLMSanitizeHiddenIDs(dict[VLMHiddenItemsKey])];
-    NSDictionary *editRule = VLMGlobalRuleForKindInPrefs(dict, VLMMenuKindEdit);
-    NSDictionary *contextRule = VLMGlobalRuleForKindInPrefs(dict, VLMMenuKindContext);
-    gGlobalEditOrder = [editRule[@"order"] copy] ?: @[];
-    gGlobalContextOrder = [contextRule[@"order"] copy] ?: @[];
-    gGlobalEditHidden = [NSSet setWithArray:editRule[@"hidden"] ?: @[]];
-    gGlobalContextHidden = [NSSet setWithArray:contextRule[@"hidden"] ?: @[]];
-    gGlobalEditCustom = [editRule[@"customOrder"] boolValue];
-    gGlobalContextCustom = [contextRule[@"customOrder"] boolValue];
+    gRegistryByID = [registryIndex copy];
+    NSString *bundleID = VLMCurrentBundleID();
+    gResolvedEditPolicy = [VLMResolvedPolicyForKindInPrefs(dict, bundleID, VLMMenuKindEdit) copy];
+    gResolvedContextPolicy = [VLMResolvedPolicyForKindInPrefs(dict, bundleID, VLMMenuKindContext) copy];
 }
 
 static BOOL VLMContextOn(void) {
@@ -110,6 +100,10 @@ static BOOL VLMContextOn(void) {
 
 static BOOL VLMEditOn(void) {
     return gEnabled && gEditMenus;
+}
+
+static BOOL VLMKindOn(NSString *kind) {
+    return [kind isEqualToString:VLMMenuKindContext] ? VLMContextOn() : VLMEditOn();
 }
 
 static NSString *VLMTrimTitle(NSString *text) {
@@ -184,6 +178,37 @@ static NSString *VLMCustomItemIDForTitle(NSString *title) {
     return VLMRulesItemIDForTitle(VLMCatalogItems(), title);
 }
 
+static NSString *VLMWeakItemIDForTitle(NSString *title) {
+    NSString *catalogID = VLMCatalogIDForTitle(title);
+    if (catalogID.length > 0) {
+        return catalogID;
+    }
+    NSString *folded = VLMRulesFoldedText(title);
+    if (folded.length == 0) {
+        return nil;
+    }
+    return [NSString stringWithFormat:@"title:%@:%@", VLMCurrentBundleID(), folded];
+}
+
+static BOOL VLMIdentifierLooksGenerated(NSString *identifier) {
+    if (identifier.length == 0) return NO;
+    return [[NSUUID alloc] initWithUUIDString:identifier] != nil;
+}
+
+static NSString *VLMPropertyListToken(id propertyList) {
+    NSString *value = nil;
+    if ([propertyList isKindOfClass:[NSString class]]) value = propertyList;
+    else if ([propertyList isKindOfClass:[NSNumber class]]) value = [propertyList stringValue];
+    if (value.length == 0) return nil;
+    const char *bytes = value.UTF8String;
+    uint64_t hash = 14695981039346656037ULL;
+    for (const unsigned char *cursor = (const unsigned char *)bytes; cursor && *cursor; cursor++) {
+        hash ^= *cursor;
+        hash *= 1099511628211ULL;
+    }
+    return [NSString stringWithFormat:@"%016llx", (unsigned long long)hash];
+}
+
 static BOOL VLMObjectIsMenu(id object) {
     static Class menuClass;
     static dispatch_once_t onceToken;
@@ -208,9 +233,7 @@ static NSArray *VLMChildrenOfMenu(id menu) {
     if (!VLMObjectIsMenu(menu) || ![menu respondsToSelector:@selector(children)]) {
         return @[];
     }
-    gVLMReadingOriginalMenu += 1;
     NSArray *children = ((NSArray *(*)(id, SEL))objc_msgSend)(menu, @selector(children));
-    gVLMReadingOriginalMenu -= 1;
     return [children isKindOfClass:[NSArray class]] ? children : @[];
 }
 
@@ -356,41 +379,23 @@ static NSArray *VLMDiscoverMenuElements(id object, NSInteger depth) {
     return best;
 }
 
-static BOOL VLMItemHiddenInSet(NSString *itemID, NSSet<NSString *> *hidden) {
-    if (itemID.length == 0 || hidden.count == 0) {
-        return NO;
-    }
-    if ([hidden containsObject:itemID]) {
-        return YES;
-    }
-    if ([itemID hasPrefix:@"custom:"]) {
-        NSString *catalog = VLMCatalogIDForTitle([itemID substringFromIndex:7]);
-        return catalog.length > 0 && [hidden containsObject:catalog];
-    }
-    for (NSString *hiddenID in hidden) {
-        if (![hiddenID hasPrefix:@"custom:"]) {
-            continue;
-        }
-        NSString *catalog = VLMCatalogIDForTitle([hiddenID substringFromIndex:7]);
-        if (catalog.length > 0 && [catalog isEqualToString:itemID]) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
-static BOOL VLMTitleHiddenInSet(NSString *title, NSSet<NSString *> *hidden) {
-    return VLMItemHiddenInSet(VLMCustomItemIDForTitle(title), hidden);
-}
-
 static NSString *VLMCatalogIDForElement(id element) {
     if (!element || [element isKindOfClass:[NSNull class]]) {
         return nil;
     }
     if ([element isKindOfClass:[NSString class]]) {
-        return VLMCustomItemIDForTitle(element);
+        return VLMWeakItemIDForTitle(element);
     }
 
+    if ([element isKindOfClass:[UIAction class]] && [element respondsToSelector:@selector(identifier)]) {
+        id identifier = ((id (*)(id, SEL))objc_msgSend)(element, @selector(identifier));
+        if ([identifier isKindOfClass:[NSString class]] && [identifier length] > 0
+            && !VLMIdentifierLooksGenerated(identifier)) {
+            NSString *catalog = VLMCatalogIDForIdentifier(identifier);
+            return catalog ?: [@"action:" stringByAppendingString:identifier];
+        }
+        return VLMWeakItemIDForTitle(VLMTitleFromObject(element));
+    }
     NSString *selectorName = nil;
     if ([element respondsToSelector:@selector(action)]) {
         SEL action = ((SEL (*)(id, SEL))objc_msgSend)(element, @selector(action));
@@ -400,55 +405,56 @@ static NSString *VLMCatalogIDForElement(id element) {
             if (fromSel) {
                 return fromSel;
             }
+            id propertyList = nil;
+            if ([element respondsToSelector:@selector(propertyList)]) {
+                propertyList = ((id (*)(id, SEL))objc_msgSend)(element, @selector(propertyList));
+            }
+            NSString *propertyToken = VLMPropertyListToken(propertyList);
+            if (propertyToken.length > 0) {
+                return [NSString stringWithFormat:@"command:%@:pl-%@", selectorName, propertyToken];
+            }
+            return [@"command:" stringByAppendingString:selectorName];
         }
     }
 
     if ([element respondsToSelector:@selector(identifier)]) {
         id identifier = ((id (*)(id, SEL))objc_msgSend)(element, @selector(identifier));
-        if ([identifier isKindOfClass:[NSString class]]) {
+        if ([identifier isKindOfClass:[NSString class]] && [identifier length] > 0
+            && !VLMIdentifierLooksGenerated(identifier)) {
             NSString *fromIdent = VLMCatalogIDForIdentifier(identifier);
             if (fromIdent) {
                 return fromIdent;
             }
+            Class deferredClass = objc_getClass("UIDeferredMenuElement");
+            NSString *prefix = VLMObjectIsMenu(element) ? @"menu:"
+                : (deferredClass && [element isKindOfClass:deferredClass] ? @"deferred:" : @"element:");
+            return [prefix stringByAppendingString:identifier];
         }
     }
 
     NSString *title = VLMTitleFromObject(element);
     if (title.length > 0) {
-        return VLMCustomItemIDForTitle(title);
+        return VLMWeakItemIDForTitle(title);
     }
 
-    return VLMCustomItemIDForTitle(selectorName);
-}
-
-static NSInteger VLMRankForItemID(NSString *itemID, NSArray<NSString *> *orderIDs) {
-    if (itemID.length == 0 || orderIDs.count == 0) {
-        return NSIntegerMax;
-    }
-    NSUInteger index = [orderIDs indexOfObject:itemID];
-    if (index == NSNotFound) {
-        return NSIntegerMax - 1;
-    }
-    return (NSInteger)index;
+    return selectorName.length ? [@"command:" stringByAppendingString:selectorName] : nil;
 }
 
 static NSArray<NSDictionary *> *VLMItemRecordsFromElements(NSArray *elements) {
     NSMutableArray<NSDictionary *> *records = [NSMutableArray array];
     NSMutableSet<NSString *> *seen = [NSMutableSet set];
-    for (id element in VLMExpandedMenuElements(elements, NO)) {
+    for (id element in VLMExpandedMenuElements(elements, YES)) {
         NSString *itemID = VLMCatalogIDForElement(element);
         if (itemID.length == 0 || [seen containsObject:itemID]) {
             continue;
         }
-        if ([itemID hasPrefix:@"custom:"] && VLMTitleLooksLikeIdentifier([itemID substringFromIndex:7])) {
-            continue;
-        }
         NSString *title = VLMTitleFromObject(element);
-        if (title.length == 0) {
-            title = VLMLabelForItemID(itemID);
+        if (([itemID hasPrefix:@"custom:"] || [itemID hasPrefix:@"title:"])
+            && VLMTitleLooksLikeIdentifier(title)) {
+            continue;
         }
         if (title.length == 0) {
-            continue;
+            title = VLMLabelForItemID(itemID) ?: itemID;
         }
         if (VLMIsCapturedJunkItem(title, itemID)) {
             continue;
@@ -462,75 +468,113 @@ static NSArray<NSDictionary *> *VLMItemRecordsFromElements(NSArray *elements) {
     return records;
 }
 
-static NSDictionary *VLMProfileForKind(NSString *kind) {
-    return gProfilesByID[VLMProfileIDForMenu(kind, VLMCurrentBundleID(), nil)];
+static NSDictionary *VLMRegistryRecordForKind(NSString *kind) {
+    return gRegistryByID[VLMProfileIDForMenu(kind, VLMCurrentBundleID(), nil)];
 }
 
-static NSArray<NSString *> *VLMCachedGlobalOrder(NSString *kind) {
-    return [kind isEqualToString:VLMMenuKindContext] ? (gGlobalContextOrder ?: @[]) : (gGlobalEditOrder ?: @[]);
+static NSDictionary *VLMPolicyForKind(NSString *kind) {
+    return [kind isEqualToString:VLMMenuKindContext]
+        ? (gResolvedContextPolicy ?: VLMRulesNormalizedPolicy(nil))
+        : (gResolvedEditPolicy ?: VLMRulesNormalizedPolicy(nil));
 }
 
-static NSSet<NSString *> *VLMCachedGlobalHidden(NSString *kind) {
-    return [kind isEqualToString:VLMMenuKindContext] ? (gGlobalContextHidden ?: [NSSet set]) : (gGlobalEditHidden ?: [NSSet set]);
-}
-
-static NSSet<NSString *> *VLMEffectiveHiddenSet(NSString *kind, NSDictionary *profile) {
-    NSMutableSet<NSString *> *hidden = [NSMutableSet set];
-    [hidden unionSet:VLMCachedGlobalHidden(kind)];
-    if (gLegacyHidden.count > 0) {
-        [hidden unionSet:gLegacyHidden];
+static NSArray<NSString *> *VLMOrderByReplacingLegacyID(NSArray<NSString *> *order,
+                                                         NSString *legacyID,
+                                                         NSString *stableID) {
+    if (legacyID.length == 0 || stableID.length == 0 || [legacyID isEqualToString:stableID] || ![order containsObject:legacyID]) {
+        return order;
     }
-    [hidden addObjectsFromArray:VLMProfileHiddenIDs(profile)];
-    return hidden;
-}
-
-static BOOL VLMUsesCustomOrder(NSString *kind, NSDictionary *profile) {
-    if (VLMProfileCustomOrder(profile)) {
-        return YES;
-    }
-    return [kind isEqualToString:VLMMenuKindContext] ? gGlobalContextCustom : gGlobalEditCustom;
-}
-
-static NSArray<NSString *> *VLMEffectiveOrder(NSString *kind, NSDictionary *profile) {
-    if (VLMProfileCustomOrder(profile)) {
-        NSArray<NSString *> *order = VLMProfileDisplayOrder(profile);
-        if (order.count > 0) {
-            return order;
+    NSMutableArray<NSString *> *result = [NSMutableArray arrayWithCapacity:order.count];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    for (NSString *itemID in order) {
+        NSString *next = [itemID isEqualToString:legacyID] ? stableID : itemID;
+        if (next.length > 0 && ![seen containsObject:next]) {
+            [seen addObject:next];
+            [result addObject:next];
         }
     }
-    return VLMCachedGlobalOrder(kind);
+    return result;
 }
+
+static BOOL VLMPolicyContainsLegacyTitleIDs(NSDictionary *policy) {
+    for (id itemID in [policy[@"visibility"] allKeys]) {
+        if ([itemID isKindOfClass:[NSString class]] && [itemID hasPrefix:@"custom:"]) return YES;
+    }
+    for (NSString *field in @[@"first", @"relative", @"last"]) {
+        NSArray *order = [policy[field] isKindOfClass:[NSArray class]] ? policy[field] : @[];
+        for (id itemID in order) {
+            if ([itemID isKindOfClass:[NSString class]] && [itemID hasPrefix:@"custom:"]) return YES;
+        }
+    }
+    return NO;
+}
+
+static NSDictionary *VLMPolicyWithLegacyAliases(NSDictionary *policy, NSArray *elements) {
+    if (!VLMPolicyContainsLegacyTitleIDs(policy)) {
+        return policy;
+    }
+    NSMutableDictionary *result = [VLMRulesNormalizedPolicy(policy) mutableCopy];
+    NSMutableDictionary *visibility = [result[@"visibility"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSArray *first = result[@"first"] ?: @[];
+    NSArray *relative = result[@"relative"] ?: @[];
+    NSArray *last = result[@"last"] ?: @[];
+    for (id element in elements) {
+        NSString *title = VLMTitleFromObject(element);
+        NSString *legacyID = VLMCustomItemIDForTitle(title);
+        NSString *stableID = VLMCatalogIDForElement(element);
+        if (legacyID.length == 0 || stableID.length == 0 || [legacyID isEqualToString:stableID]) continue;
+        if (!visibility[stableID] && visibility[legacyID]) visibility[stableID] = visibility[legacyID];
+        first = VLMOrderByReplacingLegacyID(first, legacyID, stableID);
+        relative = VLMOrderByReplacingLegacyID(relative, legacyID, stableID);
+        last = VLMOrderByReplacingLegacyID(last, legacyID, stableID);
+    }
+    result[@"visibility"] = visibility;
+    result[@"first"] = first;
+    result[@"relative"] = relative;
+    result[@"last"] = last;
+    return VLMRulesNormalizedPolicy(result);
+}
+
+static UIMenu *VLMRewrittenMenuForKind(UIMenu *menu, NSString *kind);
 
 static NSArray *VLMRewrittenElementsForKind(NSArray *elements, NSString *kind) {
-    if (!gEnabled || elements.count == 0) {
+    if (!VLMKindOn(kind) || elements.count == 0) {
         return elements;
     }
-    NSDictionary *profile = VLMProfileForKind(kind);
-    NSSet<NSString *> *hidden = VLMEffectiveHiddenSet(kind, profile);
-    BOOL customOrder = VLMUsesCustomOrder(kind, profile);
-    if (hidden.count == 0 && !customOrder) {
-        return elements;
-    }
-    BOOL flatten = NO;
+    NSMutableArray *tree = [NSMutableArray arrayWithCapacity:elements.count];
+    BOOL treeChanged = NO;
     for (id element in elements) {
-        if (VLMMenuShouldFlatten(element) && VLMChildrenOfMenu(element).count > 0) {
-            flatten = YES;
-            break;
+        if (!VLMObjectIsMenu(element)) {
+            Class deferredClass = objc_getClass("UIDeferredMenuElement");
+            if (deferredClass && [element isKindOfClass:deferredClass]) {
+                objc_setAssociatedObject(element, kVLMDeferredKindKey, kind, OBJC_ASSOCIATION_COPY_NONATOMIC);
+            }
+            [tree addObject:element];
+            continue;
         }
+        NSArray *originalChildren = VLMChildrenOfMenu(element);
+        UIMenu *rewrittenMenu = VLMRewrittenMenuForKind(element, kind);
+        NSArray *rewrittenChildren = VLMChildrenOfMenu(rewrittenMenu);
+        if (originalChildren.count > 0 && rewrittenChildren.count == 0) {
+            treeChanged = YES;
+            continue;
+        }
+        [tree addObject:rewrittenMenu];
+        treeChanged = treeChanged || rewrittenMenu != element;
     }
-    NSArray *working = flatten ? VLMExpandedMenuElements(elements, NO) : elements;
-    BOOL (^hiddenTest)(id) = hidden.count > 0 ? ^BOOL(id element) {
-        NSString *itemID = VLMCatalogIDForElement(element);
-        return VLMItemHiddenInSet(itemID, hidden)
-            || ([element isKindOfClass:[NSString class]] && VLMTitleHiddenInSet(element, hidden));
-    } : nil;
-    return VLMRulesApplyToItems(working,
-                                hiddenTest,
-                                VLMEffectiveOrder(kind, profile),
-                                customOrder,
-                                ^NSString *(id element) {
+    NSArray *working = treeChanged ? tree : elements;
+    NSDictionary *policy = VLMPolicyWithLegacyAliases(VLMPolicyForKind(kind), working);
+    return VLMRulesApplyPolicyToItems(working, policy, ^NSString *(id element) {
         return VLMCatalogIDForElement(element);
     });
+}
+
+static UIMenu *VLMRewrittenMenuForKind(UIMenu *menu, NSString *kind) {
+    if (!menu) return nil;
+    NSArray *children = VLMChildrenOfMenu(menu);
+    NSArray *rewritten = VLMRewrittenElementsForKind(children, kind);
+    if (rewritten == children) return menu;
+    return [menu menuByReplacingChildren:rewritten];
 }
 
 static BOOL VLMCurrentProcessShouldRememberMenus(void) {
@@ -542,52 +586,58 @@ static BOOL VLMCurrentProcessShouldRememberMenus(void) {
 }
 
 static void VLMRememberMenuProfile(NSString *kind, NSArray<NSDictionary *> *items) {
+    if (![NSThread isMainThread]) {
+        NSString *kindSnapshot = [kind copy];
+        NSArray<NSDictionary *> *itemsSnapshot = [items copy];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            VLMRememberMenuProfile(kindSnapshot, itemsSnapshot);
+        });
+        return;
+    }
     if (!gEnabled || items.count < 2 || !VLMCurrentProcessShouldRememberMenus()) {
         return;
     }
-    NSMutableArray<NSString *> *ids = [NSMutableArray array];
+    NSDictionary *existing = VLMRegistryRecordForKind(kind);
+    NSMutableDictionary<NSString *, NSString *> *knownTitles = [NSMutableDictionary dictionary];
+    for (NSDictionary *item in VLMProfileItems(existing)) {
+        if ([item[@"id"] length] > 0) knownTitles[item[@"id"]] = item[@"title"] ?: @"";
+    }
+    BOOL changed = existing == nil;
     for (NSDictionary *item in items) {
         NSString *itemID = item[@"id"];
-        if (itemID.length > 0) {
-            [ids addObject:itemID];
+        if (itemID.length == 0) continue;
+        NSString *title = item[@"title"] ?: @"";
+        if (!knownTitles[itemID] || ![knownTitles[itemID] isEqualToString:title]) {
+            changed = YES;
+            break;
         }
     }
-    if (ids.count < 2) {
-        return;
-    }
-    NSDictionary *existing = VLMProfileForKind(kind);
-    if (existing) {
-        NSMutableArray<NSString *> *have = [NSMutableArray array];
-        for (NSDictionary *item in VLMProfileItems(existing)) {
-            if (item[@"id"]) {
-                [have addObject:item[@"id"]];
-            }
-        }
-        if ([have isEqualToArray:ids]) {
-            return;
-        }
-    }
-    VLMLog(@"remember %@ in %@ items=%lu", kind, VLMCurrentBundleID(), (unsigned long)ids.count);
-    NSDictionary *built = VLMBuildProfile(
+    if (!changed) return;
+    VLMLog(@"remember %@ in %@ items=%lu", kind, VLMCurrentBundleID(), (unsigned long)items.count);
+    NSDictionary *built = VLMBuildRegistryRecord(
         kind,
         VLMCurrentBundleID(),
         VLMGuessAppName(VLMCurrentBundleID()),
         items,
-        existing,
-        nil
+        existing
     );
     if (!built) {
         return;
     }
-    NSArray *updated = VLMUpsertProfile(gProfiles, built);
-    gProfiles = [updated copy];
-    NSMutableDictionary<NSString *, NSDictionary *> *nextIndex = [gProfilesByID mutableCopy] ?: [NSMutableDictionary dictionary];
-    NSDictionary *storedProfile = VLMProfileWithID(updated, built[@"id"]);
-    if (storedProfile) {
-        nextIndex[built[@"id"]] = storedProfile;
+    NSArray *updated = VLMUpsertRegistryRecord(gRegistry, built);
+    gRegistry = [updated copy];
+    NSMutableDictionary<NSString *, NSDictionary *> *nextIndex = [gRegistryByID mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSDictionary *storedRecord = VLMRegistryRecordWithID(updated, built[@"id"]);
+    if (storedRecord) {
+        nextIndex[built[@"id"]] = storedRecord;
     }
-    gProfilesByID = [nextIndex copy];
+    gRegistryByID = [nextIndex copy];
     static BOOL scheduledWrite = NO;
+    static NSMutableSet<NSString *> *pendingRecordIDs = nil;
+    if (!pendingRecordIDs) {
+        pendingRecordIDs = [NSMutableSet set];
+    }
+    [pendingRecordIDs addObject:built[@"id"]];
     if (scheduledWrite) {
         return;
     }
@@ -596,91 +646,29 @@ static void VLMRememberMenuProfile(NSString *kind, NSArray<NSDictionary *> *item
                    dispatch_get_main_queue(),
                    ^{
         scheduledWrite = NO;
-        NSDictionary *profileSnapshot = VLMProfileWithID(gProfiles, built[@"id"]) ?: built;
-        VLMWritePrefsValuesAsync(@{VLMMenuProfilesKey: @[profileSnapshot]}, YES);
+        NSArray<NSString *> *recordIDs = pendingRecordIDs.allObjects;
+        [pendingRecordIDs removeAllObjects];
+        NSMutableArray<NSDictionary *> *records = [NSMutableArray arrayWithCapacity:recordIDs.count];
+        for (NSString *recordID in recordIDs) {
+            NSDictionary *record = VLMRegistryRecordWithID(gRegistry, recordID);
+            if (record) [records addObject:record];
+        }
+        if (records.count > 0) {
+            VLMWritePrefsValuesAsync(@{VLMMenuRegistryKey: records}, YES);
+        }
     });
-}
-
-static BOOL VLMElementsLookLikeActionMenu(NSArray *elements) {
-    NSArray *expanded = VLMExpandedMenuElements(elements, YES);
-    if (expanded.count < 2) {
-        return NO;
-    }
-    NSInteger hits = 0;
-    for (id element in expanded) {
-        NSString *itemID = VLMCatalogIDForElement(element);
-        if (itemID.length > 0 && ![itemID hasPrefix:@"custom:"]) {
-            hits += 1;
-        }
-    }
-    return hits >= 2;
-}
-
-static UIResponder *VLMFindFirstResponder(void) {
-    NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
-    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-        if ([scene isKindOfClass:[UIWindowScene class]]) {
-            [windows addObjectsFromArray:((UIWindowScene *)scene).windows];
-        }
-    }
-    SEL sel = NSSelectorFromString(@"firstResponder");
-    for (UIWindow *window in windows) {
-        if (![window respondsToSelector:sel]) {
-            continue;
-        }
-        UIResponder *responder = ((id (*)(id, SEL))objc_msgSend)(window, sel);
-        if ([responder isKindOfClass:[UIResponder class]]) {
-            return responder;
-        }
-    }
-    return nil;
-}
-
-static BOOL VLMResponderIsTextInput(UIResponder *responder) {
-    while (responder) {
-        if ([responder isKindOfClass:[UITextView class]] ||
-            [responder isKindOfClass:[UITextField class]]) {
-            return YES;
-        }
-        if ([responder conformsToProtocol:@protocol(UITextInput)]) {
-            return YES;
-        }
-        NSString *name = NSStringFromClass(responder.class);
-        if ([name containsString:@"TextView"] ||
-            [name containsString:@"TextField"] ||
-            [name containsString:@"WKContent"]) {
-            return YES;
-        }
-        responder = responder.nextResponder;
-    }
-    return NO;
-}
-
-static BOOL VLMElementsHaveCatalogHit(NSArray *elements) {
-    for (id element in VLMExpandedMenuElements(elements, YES)) {
-        NSString *itemID = VLMCatalogIDForElement(element);
-        if (itemID.length > 0 && ![itemID hasPrefix:@"custom:"]) {
-            return YES;
-        }
-    }
-    return NO;
 }
 
 static void VLMRememberUIMenuElements(NSArray *orig, NSString *fallbackKind) {
     if (orig.count == 0) {
         return;
     }
-    if ([fallbackKind isEqualToString:VLMMenuKindEdit]) {
+    NSArray<NSDictionary *> *records = VLMItemRecordsFromElements(orig);
+    if (records.count < 2) {
         return;
     }
-    NSArray *compact = VLMExpandedMenuElements(orig, NO);
-    NSArray<NSDictionary *> *records = VLMItemRecordsFromElements(compact);
-    if (records.count < 2 || records.count > 16) {
-        return;
-    }
-    if (VLMElementsLookLikeActionMenu(compact) || VLMElementsLookLikeActionMenu(orig)) {
-        VLMRememberMenuProfile(fallbackKind, records);
-    }
+    if (records.count > 64) records = [records subarrayWithRange:NSMakeRange(0, 64)];
+    VLMRememberMenuProfile(fallbackKind, records);
 }
 
 static NSArray *VLMFindEditMenuCommands(id host, NSString **outKey) {
@@ -770,7 +758,7 @@ static void VLMRememberEditMenuFromHost(id host, NSArray *commands, NSArray<NSDi
                 }
             }
             if (itemID.length == 0) {
-                itemID = VLMCustomItemIDForTitle(title);
+                itemID = VLMWeakItemIDForTitle(title);
             }
             addRecord(itemID, title);
         }
@@ -781,20 +769,8 @@ static void VLMRememberEditMenuFromHost(id host, NSArray *commands, NSArray<NSDi
 }
 
 static void VLMSortEditMenuHost(id host) {
-    NSString *key = nil;
-    NSArray *commands = VLMFindEditMenuCommands(host, &key);
-    if (commands.count == 0 || !key) {
-        return;
-    }
-    NSArray *sorted = VLMRewrittenElementsForKind(commands, VLMMenuKindEdit);
-    if (sorted == commands) {
-        return;
-    }
-    @try {
-        [host setValue:sorted forKey:key];
-        VLMLog(@"rewrote edit commands via %@", key);
-    } @catch (__unused NSException *exception) {
-    }
+    NSArray *commands = VLMFindEditMenuCommands(host, NULL);
+    VLMRememberEditMenuFromHost(host, commands, nil, NO);
 }
 
 #pragma mark - View helpers
@@ -815,10 +791,7 @@ static const void *kVLMCapturedTitleKey = &kVLMCapturedTitleKey;
 static const void *kVLMCapturedImageKey = &kVLMCapturedImageKey;
 static const void *kVLMCapturedFontKey = &kVLMCapturedFontKey;
 static const void *kVLMCapturedColorKey = &kVLMCapturedColorKey;
-static const void *kVLMIndexMapKey = &kVLMIndexMapKey;
 static const void *kVLMCapturedTitlesKey = &kVLMCapturedTitlesKey;
-static const void *kVLMMapFrozenKey = &kVLMMapFrozenKey;
-static const void *kVLMHiddenSetKey = &kVLMHiddenSetKey;
 static const void *kVLMRefreshingKey = &kVLMRefreshingKey;
 static const void *kVLMSetupDoneKey = &kVLMSetupDoneKey;
 static const void *kVLMLastCellSizeKey = &kVLMLastCellSizeKey;
@@ -1727,23 +1700,9 @@ static void VLMKeepOnScreen(UIView *view) {
     VLMAttachSystemArrows(view, below);
 }
 
-static NSInteger VLMVisibleMappedCount(UICollectionView *collectionView, NSInteger fallback) {
-    NSArray<NSNumber *> *map = objc_getAssociatedObject(collectionView, kVLMIndexMapKey);
-    if (map.count == 0) {
-        return fallback;
-    }
-    NSInteger visible = 0;
-    for (NSNumber *value in map) {
-        if (value.integerValue >= 0) {
-            visible += 1;
-        }
-    }
-    return visible;
-}
-
 static CGSize VLMVerticalFittingSize(id host, CGSize orig) {
     UICollectionView *collectionView = VLMCollectionViewInHost(host);
-    NSInteger count = VLMVisibleMappedCount(collectionView, VLMItemCount(collectionView));
+    NSInteger count = VLMItemCount(collectionView);
     if (count <= 0) {
         CGFloat estimated = orig.width > 1.0 ? round(orig.width / 72.0) : 4.0;
         count = MAX(1, (NSInteger)estimated);
@@ -1775,83 +1734,6 @@ static void VLMRepositionVisibleEditMenus(void) {
         VLMKeepOnScreen(list);
         VLMRepairEditMenuChrome(list);
     }
-}
-
-static NSInteger VLMDisplayIndexForItem(UICollectionView *collectionView, NSInteger originalIndex) {
-    NSArray<NSNumber *> *map = objc_getAssociatedObject(collectionView, kVLMIndexMapKey);
-    if (!map || originalIndex < 0 || originalIndex >= (NSInteger)map.count) {
-        return originalIndex;
-    }
-    return map[originalIndex].integerValue;
-}
-
-static NSArray<NSNumber *> *VLMIndexMapFromPairedIdentities(NSArray *primary, NSArray *_Nullable secondary, NSSet<NSString *> *hiddenIDs, NSArray<NSString *> *orderIDs, BOOL customOrder) {
-    NSInteger count = (NSInteger)primary.count;
-    if (count < 1) {
-        return nil;
-    }
-
-    NSMutableArray<NSNumber *> *ranks = [NSMutableArray arrayWithCapacity:(NSUInteger)count];
-    NSMutableIndexSet *hidden = [NSMutableIndexSet indexSet];
-    for (NSInteger index = 0; index < count; index++) {
-        NSString *firstID = VLMCatalogIDForElement(primary[index]);
-        NSString *secondID = nil;
-        if (index < (NSInteger)secondary.count) {
-            secondID = VLMCatalogIDForElement(secondary[index]);
-        }
-        NSString *title = VLMTitleFromObject(primary[index]);
-        if (title.length == 0 && index < (NSInteger)secondary.count) {
-            title = VLMTitleFromObject(secondary[index]);
-        }
-        NSString *itemID = firstID.length ? firstID : secondID;
-        if (VLMItemHiddenInSet(firstID, hiddenIDs) || VLMItemHiddenInSet(secondID, hiddenIDs) || VLMTitleHiddenInSet(title, hiddenIDs)) {
-            [hidden addIndex:(NSUInteger)index];
-        }
-        [ranks addObject:@(customOrder ? VLMRankForItemID(itemID, orderIDs) : index)];
-    }
-    if (hidden.count == 0 && !customOrder) {
-        return nil;
-    }
-
-    NSMutableArray<NSNumber *> *order = [NSMutableArray arrayWithCapacity:(NSUInteger)count];
-    for (NSInteger index = 0; index < count; index++) {
-        if (![hidden containsIndex:(NSUInteger)index]) {
-            [order addObject:@(index)];
-        }
-    }
-    if (customOrder) {
-        [order sortUsingComparator:^NSComparisonResult(NSNumber *left, NSNumber *right) {
-            NSInteger leftRank = ranks[left.integerValue].integerValue;
-            NSInteger rightRank = ranks[right.integerValue].integerValue;
-            if (leftRank < rightRank) {
-                return NSOrderedAscending;
-            }
-            if (leftRank > rightRank) {
-                return NSOrderedDescending;
-            }
-            if (left.integerValue < right.integerValue) {
-                return NSOrderedAscending;
-            }
-            if (left.integerValue > right.integerValue) {
-                return NSOrderedDescending;
-            }
-            return NSOrderedSame;
-        }];
-    }
-
-    NSMutableArray<NSNumber *> *map = [NSMutableArray arrayWithCapacity:(NSUInteger)count];
-    for (NSInteger index = 0; index < count; index++) {
-        [map addObject:@(-1)];
-    }
-    BOOL changed = hidden.count > 0;
-    for (NSInteger display = 0; display < (NSInteger)order.count; display++) {
-        NSInteger original = order[display].integerValue;
-        if (original != display) {
-            changed = YES;
-        }
-        map[original] = @(display);
-    }
-    return changed ? map : nil;
 }
 
 static NSString *VLMTitleFromCell(UICollectionViewCell *cell) {
@@ -1895,7 +1777,7 @@ static NSString *VLMTitleFromCell(UICollectionViewCell *cell) {
     return clean.length > 0 ? clean : nil;
 }
 
-static void VLMRefreshCollectionSortMap(id host, UICollectionView *collectionView) {
+static void VLMRefreshCollectionObservation(id host, UICollectionView *collectionView) {
     if (!collectionView) {
         return;
     }
@@ -1903,8 +1785,6 @@ static void VLMRefreshCollectionSortMap(id host, UICollectionView *collectionVie
         return;
     }
     objc_setAssociatedObject(collectionView, kVLMRefreshingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    BOOL frozen = objc_getAssociatedObject(collectionView, kVLMMapFrozenKey) != nil;
-
     NSInteger count = VLMItemCount(collectionView);
     NSMutableArray *storedTitles = [objc_getAssociatedObject(collectionView, kVLMCapturedTitlesKey) mutableCopy];
     if (![storedTitles isKindOfClass:[NSMutableArray class]] || (NSInteger)storedTitles.count != count) {
@@ -1917,7 +1797,6 @@ static void VLMRefreshCollectionSortMap(id host, UICollectionView *collectionVie
     }
 
     NSArray *commands = VLMFindEditMenuCommands(host, NULL);
-    NSInteger titled = 0;
     NSMutableArray<NSDictionary *> *records = [NSMutableArray array];
     for (NSInteger index = 0; index < count; index++) {
         NSIndexPath *path = [NSIndexPath indexPathForItem:index inSection:0];
@@ -1931,8 +1810,7 @@ static void VLMRefreshCollectionSortMap(id host, UICollectionView *collectionVie
         }
         NSString *current = storedTitles[index];
         if ([current isKindOfClass:[NSString class]] && VLMTrimTitle(current).length > 0) {
-            titled += 1;
-            NSString *itemID = VLMCustomItemIDForTitle(current);
+            NSString *itemID = VLMWeakItemIDForTitle(current);
             if (itemID.length > 0) {
                 [records addObject:@{@"id": itemID, @"title": VLMTrimTitle(current)}];
             }
@@ -1941,34 +1819,6 @@ static void VLMRefreshCollectionSortMap(id host, UICollectionView *collectionVie
     objc_setAssociatedObject(collectionView, kVLMCapturedTitlesKey, storedTitles, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     VLMRememberEditMenuFromHost(host, commands, records, NO);
 
-    if (frozen) {
-        objc_setAssociatedObject(collectionView, kVLMRefreshingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        return;
-    }
-
-    NSDictionary *profile = VLMProfileForKind(VLMMenuKindEdit);
-    NSSet<NSString *> *hidden = VLMEffectiveHiddenSet(VLMMenuKindEdit, profile);
-    BOOL customOrder = VLMUsesCustomOrder(VLMMenuKindEdit, profile);
-    NSArray<NSString *> *orderIDs = VLMEffectiveOrder(VLMMenuKindEdit, profile);
-    objc_setAssociatedObject(collectionView, kVLMHiddenSetKey, hidden, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-
-    NSArray<NSNumber *> *map = nil;
-    if (titled > 0) {
-        map = VLMIndexMapFromPairedIdentities(storedTitles, commands, hidden, orderIDs, customOrder);
-    }
-    if (!map && commands.count > 0) {
-        map = VLMIndexMapFromPairedIdentities(commands, nil, hidden, orderIDs, customOrder);
-    }
-
-    NSArray<NSNumber *> *current = objc_getAssociatedObject(collectionView, kVLMIndexMapKey);
-    if (!((map && [map isEqualToArray:current]) || (!map && !current))) {
-        objc_setAssociatedObject(collectionView, kVLMIndexMapKey, map, OBJC_ASSOCIATION_COPY_NONATOMIC);
-        [collectionView.collectionViewLayout invalidateLayout];
-    }
-
-    if (titled >= 2 && titled >= count) {
-        objc_setAssociatedObject(collectionView, kVLMMapFrozenKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
     objc_setAssociatedObject(collectionView, kVLMRefreshingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
@@ -1999,7 +1849,7 @@ static void VLMScheduleRememberFromList(UIView *host) {
             objc_setAssociatedObject(strongHost, kVLMRememberDebounceKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
             return;
         }
-        VLMRefreshCollectionSortMap(strongHost, collectionView);
+        VLMRefreshCollectionObservation(strongHost, collectionView);
     });
 }
 
@@ -2025,7 +1875,7 @@ static void VLMScheduleRememberFromList(UIView *host) {
 }
 
 - (CGSize)collectionViewContentSize {
-    NSInteger count = VLMVisibleMappedCount(self.collectionView, [self vlm_itemCount]);
+    NSInteger count = [self vlm_itemCount];
     return CGSizeMake([self vlm_rowWidth], kVLMListInset * 2.0 + MAX(count, 0) * kVLMRowHeight);
 }
 
@@ -2045,14 +1895,8 @@ static void VLMScheduleRememberFromList(UIView *host) {
 - (UICollectionViewLayoutAttributes *)layoutAttributesForItemAtIndexPath:(NSIndexPath *)indexPath {
     UICollectionViewLayoutAttributes *attributes = [UICollectionViewLayoutAttributes layoutAttributesForCellWithIndexPath:indexPath];
     CGFloat width = [self vlm_rowWidth];
-    NSInteger displayIndex = VLMDisplayIndexForItem(self.collectionView, indexPath.item);
-    if (displayIndex < 0) {
-        attributes.hidden = YES;
-        attributes.frame = CGRectZero;
-        return attributes;
-    }
     attributes.hidden = NO;
-    attributes.frame = CGRectMake(0, kVLMListInset + displayIndex * kVLMRowHeight, width, kVLMRowHeight);
+    attributes.frame = CGRectMake(0, kVLMListInset + indexPath.item * kVLMRowHeight, width, kVLMRowHeight);
     return attributes;
 }
 
@@ -2191,7 +2035,7 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
         objc_setAssociatedObject(host, kVLMLoggedLayoutKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
-    NSInteger visibleCount = VLMVisibleMappedCount(collectionView, VLMItemCount(collectionView));
+    NSInteger visibleCount = VLMItemCount(collectionView);
     if (setupDone) {
         if (!scrolling) {
             VLMMatchCollectionFrame(host, collectionView);
@@ -2265,7 +2109,7 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     VLMSetSystemArrowDirection(host, below);
     VLMAttachSystemArrows(host, below);
     VLMSortEditMenuHost(host);
-    VLMRefreshCollectionSortMap(host, collectionView);
+    VLMRefreshCollectionObservation(host, collectionView);
     VLMScheduleRememberFromList(host);
     VLMDumpMenuHierarchy(host);
     if (onScreen) {
@@ -2877,6 +2721,49 @@ static BOOL VLMIsInsideEditMenu(id view) {
     return NO;
 }
 
+static const void *kVLMEditDelegateProxyKey = &kVLMEditDelegateProxyKey;
+
+@interface VLMEditMenuDelegateProxy : NSObject <UIEditMenuInteractionDelegate>
+@property (nonatomic, weak) id originalDelegate;
+@end
+
+@implementation VLMEditMenuDelegateProxy
+
+- (BOOL)respondsToSelector:(SEL)selector {
+    return [super respondsToSelector:selector] || [self.originalDelegate respondsToSelector:selector];
+}
+
+- (id)forwardingTargetForSelector:(SEL)selector {
+    if ([self.originalDelegate respondsToSelector:selector]) {
+        return self.originalDelegate;
+    }
+    return [super forwardingTargetForSelector:selector];
+}
+
+- (UIMenu *)editMenuInteraction:(UIEditMenuInteraction *)interaction
+            menuForConfiguration:(UIEditMenuConfiguration *)configuration
+               suggestedActions:(NSArray<UIMenuElement *> *)suggestedActions {
+    UIMenu *menu = nil;
+    SEL selector = @selector(editMenuInteraction:menuForConfiguration:suggestedActions:);
+    if ([self.originalDelegate respondsToSelector:selector]) {
+        menu = ((id (*)(id, SEL, id, id, id))objc_msgSend)(self.originalDelegate,
+                                                            selector,
+                                                            interaction,
+                                                            configuration,
+                                                            suggestedActions);
+    }
+    if (!VLMEditOn()) {
+        return menu;
+    }
+    if (!menu) {
+        menu = [UIMenu menuWithChildren:suggestedActions ?: @[]];
+    }
+    VLMRememberUIMenuElements(VLMChildrenOfMenu(menu), VLMMenuKindEdit);
+    return VLMRewrittenMenuForKind(menu, VLMMenuKindEdit);
+}
+
+@end
+
 #pragma mark - UIMenu: context menus / palettes / compact rows
 
 %group ContextMenus
@@ -2884,18 +2771,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
 %hook UIMenu
 
 - (NSArray *)children {
-    NSArray *orig = %orig;
-    if (gVLMReadingOriginalMenu > 0) {
-        return orig;
-    }
-    if (!VLMContextOn() || orig.count == 0) {
-        return orig;
-    }
-    NSArray *sorted = VLMRewrittenElementsForKind(orig, VLMMenuKindContext);
-    if (sorted != orig) {
-        VLMLog(@"rewrote UIMenu children %lu -> %lu", (unsigned long)orig.count, (unsigned long)sorted.count);
-    }
-    return sorted;
+    return %orig;
 }
 
 - (NSInteger)preferredElementSize {
@@ -2929,8 +2805,6 @@ static BOOL VLMIsInsideEditMenu(id view) {
                      children:(NSArray *)children {
     if (VLMContextOn()) {
         options = options & ~kVLMPaletteOption;
-        VLMRememberUIMenuElements(children, VLMMenuKindContext);
-        children = VLMRewrittenElementsForKind(children, VLMMenuKindContext);
     }
     UIMenu *menu = %orig;
     if (menu && VLMContextOn()) {
@@ -2946,8 +2820,6 @@ static BOOL VLMIsInsideEditMenu(id view) {
                      children:(NSArray *)children {
     if (VLMContextOn()) {
         options = options & ~kVLMPaletteOption;
-        VLMRememberUIMenuElements(children, VLMMenuKindContext);
-        children = VLMRewrittenElementsForKind(children, VLMMenuKindContext);
     }
     UIMenu *menu = %orig;
     if (menu && VLMContextOn()) {
@@ -2957,12 +2829,6 @@ static BOOL VLMIsInsideEditMenu(id view) {
 }
 
 - (UIMenu *)menuByReplacingChildren:(NSArray *)newChildren {
-    if (VLMContextOn() && newChildren.count > 0) {
-        VLMRememberUIMenuElements(newChildren, VLMMenuKindContext);
-    }
-    if (VLMContextOn()) {
-        newChildren = VLMRewrittenElementsForKind(newChildren, VLMMenuKindContext);
-    }
     UIMenu *menu = %orig;
     if (menu && VLMContextOn()) {
         menu.preferredElementSize = kVLMElementSizeLarge;
@@ -2971,11 +2837,139 @@ static BOOL VLMIsInsideEditMenu(id view) {
 }
 
 + (instancetype)menuWithChildren:(NSArray *)children {
-    if (VLMContextOn()) {
-        VLMRememberUIMenuElements(children, VLMMenuKindContext);
-        children = VLMRewrittenElementsForKind(children, VLMMenuKindContext);
-    }
     return %orig;
+}
+
+%end
+
+%hook UIContextMenuConfiguration
+
++ (instancetype)configurationWithIdentifier:(id)identifier
+                              previewProvider:(id)previewProvider
+                               actionProvider:(id)actionProvider {
+    if (!actionProvider) {
+        return %orig;
+    }
+    UIMenu *(^originalProvider)(NSArray *) = [actionProvider copy];
+    UIMenu *(^wrappedProvider)(NSArray *) = ^UIMenu *(NSArray *suggestedActions) {
+        UIMenu *menu = originalProvider(suggestedActions ?: @[]);
+        if (!VLMContextOn() || !menu) {
+            return menu;
+        }
+        VLMRememberUIMenuElements(VLMChildrenOfMenu(menu), VLMMenuKindContext);
+        return VLMRewrittenMenuForKind(menu, VLMMenuKindContext);
+    };
+    id configuration = %orig(identifier, previewProvider, wrappedProvider);
+    if (VLMContextOn() && VLMRulesPolicyHasOrdering(VLMPolicyForKind(VLMMenuKindContext))
+        && [configuration respondsToSelector:@selector(setPreferredMenuElementOrder:)]) {
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(configuration,
+                                                      @selector(setPreferredMenuElementOrder:),
+                                                      (NSInteger)UIContextMenuConfigurationElementOrderFixed);
+    }
+    return configuration;
+}
+
+%end
+
+%hook UIButton
+
+- (void)setMenu:(UIMenu *)menu {
+    if (VLMContextOn() && menu) {
+        VLMRememberUIMenuElements(VLMChildrenOfMenu(menu), VLMMenuKindContext);
+        menu = VLMRewrittenMenuForKind(menu, VLMMenuKindContext);
+    }
+    %orig(menu);
+    if (VLMContextOn() && VLMRulesPolicyHasOrdering(VLMPolicyForKind(VLMMenuKindContext))
+        && [self respondsToSelector:@selector(setPreferredMenuElementOrder:)]) {
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(self,
+                                                      @selector(setPreferredMenuElementOrder:),
+                                                      (NSInteger)UIContextMenuConfigurationElementOrderFixed);
+    }
+}
+
+%end
+
+%hook UIBarButtonItem
+
+- (void)setMenu:(UIMenu *)menu {
+    if (VLMContextOn() && menu) {
+        VLMRememberUIMenuElements(VLMChildrenOfMenu(menu), VLMMenuKindContext);
+        menu = VLMRewrittenMenuForKind(menu, VLMMenuKindContext);
+    }
+    %orig(menu);
+    if (VLMContextOn() && VLMRulesPolicyHasOrdering(VLMPolicyForKind(VLMMenuKindContext))
+        && [self respondsToSelector:@selector(setPreferredMenuElementOrder:)]) {
+        ((void (*)(id, SEL, NSInteger))objc_msgSend)(self,
+                                                      @selector(setPreferredMenuElementOrder:),
+                                                      (NSInteger)UIContextMenuConfigurationElementOrderFixed);
+    }
+}
+
+%end
+
+%end
+
+%group EditMenuModel
+
+%hook UIEditMenuInteraction
+
+- (instancetype)initWithDelegate:(id)delegate {
+    if ([delegate isKindOfClass:[VLMEditMenuDelegateProxy class]]) {
+        return %orig;
+    }
+    VLMEditMenuDelegateProxy *proxy = [VLMEditMenuDelegateProxy new];
+    proxy.originalDelegate = delegate;
+    UIEditMenuInteraction *interaction = %orig(proxy);
+    if (interaction) {
+        objc_setAssociatedObject(interaction, kVLMEditDelegateProxyKey, proxy, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return interaction;
+}
+
+%end
+
+%end
+
+%group DeferredMenus
+
+%hook UIDeferredMenuElement
+
++ (instancetype)elementWithProvider:(id)elementProvider {
+    if (!elementProvider) return %orig;
+    __block __weak UIDeferredMenuElement *deferred = nil;
+    void (^originalProvider)(void (^)(NSArray *)) = [elementProvider copy];
+    void (^wrappedProvider)(void (^)(NSArray *)) = ^(void (^completion)(NSArray *)) {
+        originalProvider(^(NSArray *elements) {
+            NSString *kind = objc_getAssociatedObject(deferred, kVLMDeferredKindKey);
+            NSArray *result = elements ?: @[];
+            if (kind.length > 0 && VLMKindOn(kind)) {
+                VLMRememberUIMenuElements(result, kind);
+                result = VLMRewrittenElementsForKind(result, kind);
+            }
+            completion(result);
+        });
+    };
+    deferred = %orig(wrappedProvider);
+    return deferred;
+}
+
++ (instancetype)elementWithUncachedProvider:(id)elementProvider {
+    if (!elementProvider) return %orig;
+    __block __weak UIDeferredMenuElement *deferred = nil;
+    void (^originalProvider)(void (^)(NSArray *)) = [elementProvider copy];
+    void (^wrappedProvider)(void (^)(NSArray *)) = ^(void (^completion)(NSArray *)) {
+        originalProvider(^(NSArray *elements) {
+            NSString *kind = objc_getAssociatedObject(deferred, kVLMDeferredKindKey);
+            NSArray *result = elements ?: @[];
+            if (kind.length > 0 && VLMKindOn(kind)) {
+                VLMRememberUIMenuElements(result, kind);
+                result = VLMRewrittenElementsForKind(result, kind);
+            }
+            completion(result);
+        });
+    };
+    deferred = %orig(wrappedProvider);
+    return deferred;
 }
 
 %end
@@ -3072,9 +3066,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
     %orig;
     if (!self.window) {
         UICollectionView *collectionView = VLMCollectionViewInHost(self);
-        objc_setAssociatedObject(collectionView, kVLMMapFrozenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(collectionView, kVLMCapturedTitlesKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        objc_setAssociatedObject(collectionView, kVLMIndexMapKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
         objc_setAssociatedObject(self, kVLMSetupDoneKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, kVLMCollectionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, kVLMViewportSizeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -3277,7 +3269,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
 static void VLMPrefsChanged(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     dispatch_async(dispatch_get_main_queue(), ^{
         VLMLoadPrefs();
-        VLMLog(@"prefs reload enabled=%d context=%d edit=%d debug=%d profiles=%lu hidden=%lu", gEnabled, gContextMenus, gEditMenus, gDebug, (unsigned long)gProfiles.count, (unsigned long)gLegacyHidden.count);
+        VLMLog(@"prefs reload enabled=%d context=%d edit=%d debug=%d registry=%lu", gEnabled, gContextMenus, gEditMenus, gDebug, (unsigned long)gRegistry.count);
     });
 }
 
@@ -3295,9 +3287,19 @@ static void VLMIncomingPrefsChanged(CFNotificationCenterRef center, void *observ
     VLMLoadPrefs();
     VLMStartPrefsWriterIfNeeded();
     VLMStartIncomingObserverIfNeeded();
+    if (isSpringBoard) {
+        VLMMigrateToPolicyV2IfNeededAsync();
+    }
     BOOL hookedList = NO;
 
     %init(ContextMenus);
+    if (objc_getClass("UIDeferredMenuElement")) {
+        %init(DeferredMenus);
+    }
+
+    if (!isSpringBoard && objc_getClass("UIEditMenuInteraction")) {
+        %init(EditMenuModel);
+    }
 
     if (!isSpringBoard && objc_getClass("_UIEditMenuListView")) {
         %init(EditMenuList);
@@ -3356,6 +3358,6 @@ static void VLMIncomingPrefsChanged(CFNotificationCenterRef center, void *observ
             CFNotificationSuspensionBehaviorDeliverImmediately
         );
     }
-    VLMLog(@"loaded in %@ enabled=%d context=%d edit=%d debug=%d list=%d profiles=%lu",
-           bundleID, gEnabled, gContextMenus, gEditMenus, gDebug, hookedList, (unsigned long)gProfiles.count);
+    VLMLog(@"loaded in %@ enabled=%d context=%d edit=%d debug=%d list=%d registry=%lu",
+           bundleID, gEnabled, gContextMenus, gEditMenus, gDebug, hookedList, (unsigned long)gRegistry.count);
 }

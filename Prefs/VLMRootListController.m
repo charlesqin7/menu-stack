@@ -40,7 +40,7 @@ extern char **environ;
 - (NSArray *)specifiers {
     static dispatch_once_t migrationToken;
     dispatch_once(&migrationToken, ^{
-        VLMMigrateToGlobalRulesIfNeededAsync();
+        VLMMigrateToPolicyV2IfNeededAsync();
     });
     if (!_specifiers) {
         _specifiers = [self loadSpecifiersFromPlistName:@"Root" target:self];

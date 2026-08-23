@@ -55,13 +55,13 @@
 
 - (void)reloadFromPrefs {
     NSDictionary *prefs = VLMReadPrefsDictionary();
-    _profiles = VLMSanitizeProfiles(prefs[VLMMenuProfilesKey]);
+    _profiles = [prefs[VLMMenuRegistryKey] isKindOfClass:[NSArray class]] ? prefs[VLMMenuRegistryKey] : @[];
     [self rebuildProfileDisplayCache];
     [_tableView reloadData];
 }
 
 - (void)writeProfiles {
-    VLMReplacePrefsValuesAsync(@{VLMMenuProfilesKey: _profiles ?: @[]}, YES);
+    VLMReplacePrefsValuesAsync(@{VLMMenuRegistryKey: _profiles ?: @[]}, YES);
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -73,11 +73,11 @@
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return @"最近弹出过的 App";
+    return @"已记录的 App 与菜单类型";
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return @"每条是某个 App 最近一次弹出时菜单条上的项。这里只能再多藏几项，或拖动后覆盖该 App 的顺序。全局隐藏不能在这里打开。";
+    return @"这里汇总每个 App 曾经出现过的菜单项，不会被下一次不同菜单覆盖。可为项目选择继承、显示或隐藏，并单独设置该 App 的顺序。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
@@ -134,7 +134,9 @@
         return;
     }
     NSString *profileID = _profiles[indexPath.row][@"id"];
-    _profiles = VLMRemoveProfile(_profiles, profileID);
+    NSDictionary *record = _profiles[indexPath.row];
+    VLMWriteAppPolicyAsync(record[@"bundle"], record[@"kind"], @{@"orderMode": VLMRulesOrderModeInherit});
+    _profiles = VLMRemoveRegistryRecord(_profiles, profileID);
     [self rebuildProfileDisplayCache];
     [self writeProfiles];
     [tableView reloadData];

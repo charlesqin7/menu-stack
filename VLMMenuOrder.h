@@ -12,6 +12,9 @@ extern NSString * const VLMHiddenItemsKey;
 extern NSString * const VLMPrefsStampKey;
 extern NSString * const VLMMenuProfilesKey;
 extern NSString * const VLMGlobalRulesKey;
+extern NSString * const VLMMenuPoliciesKey;
+extern NSString * const VLMMenuRegistryKey;
+extern NSString * const VLMPolicyV1BackupKey;
 extern NSString * const VLMMenuKindEdit;
 extern NSString * const VLMMenuKindContext;
 extern NSString * const VLMIncomingNotificationName;
@@ -28,6 +31,23 @@ void VLMIngestIncomingPrefs(void);
 BOOL VLMWriteIncomingSnapshot(NSDictionary<NSString *, id> *changes);
 void VLMMigrateToGlobalRulesIfNeeded(void);
 void VLMMigrateToGlobalRulesIfNeededAsync(void);
+void VLMMigrateToPolicyV2IfNeeded(void);
+void VLMMigrateToPolicyV2IfNeededAsync(void);
+
+NSDictionary *VLMPolicyRootInPrefs(NSDictionary<NSString *, id> *_Nullable prefs);
+NSDictionary *VLMGlobalPolicyForKindInPrefs(NSDictionary<NSString *, id> *_Nullable prefs,
+                                            NSString *_Nullable kind);
+NSDictionary *VLMAppPolicyForKindInPrefs(NSDictionary<NSString *, id> *_Nullable prefs,
+                                         NSString *_Nullable bundleID,
+                                         NSString *_Nullable kind);
+NSDictionary *VLMResolvedPolicyForKindInPrefs(NSDictionary<NSString *, id> *_Nullable prefs,
+                                              NSString *_Nullable bundleID,
+                                              NSString *_Nullable kind);
+void VLMWriteGlobalPolicyAsync(NSString *_Nullable kind,
+                               NSDictionary *_Nullable policy);
+void VLMWriteAppPolicyAsync(NSString *_Nullable bundleID,
+                            NSString *_Nullable kind,
+                            NSDictionary *_Nullable policy);
 
 NSDictionary *_Nullable VLMGlobalRuleForKind(NSString *_Nullable kind);
 NSDictionary *VLMGlobalRuleForKindInPrefs(NSDictionary<NSString *, id> *_Nullable prefs,
@@ -86,5 +106,18 @@ NSDictionary *VLMBuildProfile(NSString *kind,
                              NSArray *_Nullable inheritHidden);
 NSArray<NSDictionary *> *VLMUpsertProfile(NSArray *_Nullable profiles, NSDictionary *profile);
 NSArray<NSDictionary *> *VLMRemoveProfile(NSArray *_Nullable profiles, NSString *profileID);
+
+NSArray<NSDictionary *> *VLMSanitizeRegistryRecords(id _Nullable value);
+NSDictionary *_Nullable VLMRegistryRecordWithID(NSArray *_Nullable records,
+                                                 NSString *_Nullable recordID);
+NSDictionary *_Nullable VLMBuildRegistryRecord(NSString *kind,
+                                               NSString *_Nullable bundleID,
+                                               NSString *_Nullable appName,
+                                               NSArray<NSDictionary *> *items,
+                                               NSDictionary *_Nullable existing);
+NSArray<NSDictionary *> *VLMUpsertRegistryRecord(NSArray *_Nullable records,
+                                                 NSDictionary *record);
+NSArray<NSDictionary *> *VLMRemoveRegistryRecord(NSArray *_Nullable records,
+                                                 NSString *recordID);
 
 NS_ASSUME_NONNULL_END

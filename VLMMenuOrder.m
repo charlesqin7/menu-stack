@@ -34,12 +34,16 @@ NSString * const VLMHiddenItemsKey = @"HiddenMenuItems";
 NSString * const VLMPrefsStampKey = @"PrefsStamp";
 NSString * const VLMMenuProfilesKey = @"MenuProfiles";
 NSString * const VLMGlobalRulesKey = @"GlobalRules";
+NSString * const VLMMenuPoliciesKey = @"MenuPoliciesV2";
+NSString * const VLMMenuRegistryKey = @"MenuRegistryV2";
+NSString * const VLMPolicyV1BackupKey = @"MenuPolicyV1Backup";
 NSString * const VLMMenuKindEdit = @"edit";
 NSString * const VLMMenuKindContext = @"context";
 NSString * const VLMIncomingNotificationName = @"com.qins.verticalmenu/IncomingPrefs";
 
 static BOOL gApplyingRemotePrefs = NO;
 static BOOL gReplaceProfiles = NO;
+static BOOL gReplaceRegistry = NO;
 static BOOL gUnsandboxed = NO;
 static BOOL gDebugLoggingEnabled = NO;
 
@@ -195,6 +199,11 @@ static NSArray<NSDictionary *> *VLMPrefsSources(void) {
     return sources;
 }
 
+static NSTimeInterval VLMPrefsStamp(NSDictionary *dict) {
+    id raw = dict[VLMPrefsStampKey];
+    return [raw respondsToSelector:@selector(doubleValue)] ? [raw doubleValue] : 0;
+}
+
 static id VLMPickPrefValue(NSArray<NSDictionary *> *sources, NSString *key) {
     id chosen = nil;
     NSTimeInterval chosenStamp = -1;
@@ -203,7 +212,7 @@ static id VLMPickPrefValue(NSArray<NSDictionary *> *sources, NSString *key) {
         if (!value) {
             continue;
         }
-        NSTimeInterval stamp = [dict[VLMPrefsStampKey] doubleValue];
+        NSTimeInterval stamp = VLMPrefsStamp(dict);
         if (!chosen || stamp >= chosenStamp) {
             chosen = value;
             chosenStamp = stamp;
@@ -215,8 +224,8 @@ static id VLMPickPrefValue(NSArray<NSDictionary *> *sources, NSString *key) {
 static NSArray<NSDictionary *> *VLMMergedProfilesFromSources(NSArray<NSDictionary *> *sources) {
     NSMutableArray<NSDictionary *> *ordered = [sources mutableCopy] ?: [NSMutableArray array];
     [ordered sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
-        NSTimeInterval leftStamp = [left[VLMPrefsStampKey] doubleValue];
-        NSTimeInterval rightStamp = [right[VLMPrefsStampKey] doubleValue];
+        NSTimeInterval leftStamp = VLMPrefsStamp(left);
+        NSTimeInterval rightStamp = VLMPrefsStamp(right);
         if (leftStamp < rightStamp) {
             return NSOrderedAscending;
         }
@@ -237,6 +246,46 @@ static NSArray<NSDictionary *> *VLMMergedProfilesFromSources(NSArray<NSDictionar
     return VLMSanitizeProfiles(profilesByID.allValues);
 }
 
+static NSArray<NSDictionary *> *VLMMergedRegistryFromSources(NSArray<NSDictionary *> *sources) {
+    NSMutableArray<NSDictionary *> *ordered = [sources mutableCopy] ?: [NSMutableArray array];
+    [ordered sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+        NSTimeInterval leftStamp = VLMPrefsStamp(left);
+        NSTimeInterval rightStamp = VLMPrefsStamp(right);
+        if (leftStamp < rightStamp) return NSOrderedAscending;
+        if (leftStamp > rightStamp) return NSOrderedDescending;
+        return NSOrderedSame;
+    }];
+    NSArray<NSDictionary *> *records = @[];
+    for (NSDictionary *dict in ordered) {
+        for (NSDictionary *record in VLMSanitizeRegistryRecords(dict[VLMMenuRegistryKey])) {
+            records = VLMUpsertRegistryRecord(records, record);
+        }
+    }
+    return VLMSanitizeRegistryRecords(records);
+}
+
+// Normal preference stores contain complete Registry snapshots. Selecting the
+// newest snapshot (instead of unioning every stale CF/file copy) makes an
+// explicit deletion durable. Incoming runtime observations still use the
+// update merger above before SpringBoard persists the next full snapshot.
+static NSArray<NSDictionary *> *VLMLatestRegistryFromSources(NSArray<NSDictionary *> *sources) {
+    NSArray<NSDictionary *> *chosen = @[];
+    NSTimeInterval chosenStamp = -1;
+    BOOL found = NO;
+    for (NSDictionary *dict in sources) {
+        if (!dict[VLMMenuRegistryKey]) {
+            continue;
+        }
+        NSTimeInterval stamp = VLMPrefsStamp(dict);
+        if (!found || stamp >= chosenStamp) {
+            chosen = VLMSanitizeRegistryRecords(dict[VLMMenuRegistryKey]);
+            chosenStamp = stamp;
+            found = YES;
+        }
+    }
+    return chosen;
+}
+
 static NSArray<NSDictionary *> *VLMProfilesByReplacingProfiles(NSArray *base, NSArray *updates) {
     NSMutableDictionary<NSString *, NSDictionary *> *profilesByID = [NSMutableDictionary dictionary];
     for (NSDictionary *profile in VLMSanitizeProfiles(base)) {
@@ -246,6 +295,17 @@ static NSArray<NSDictionary *> *VLMProfilesByReplacingProfiles(NSArray *base, NS
         profilesByID[profile[@"id"]] = profile;
     }
     return VLMSanitizeProfiles(profilesByID.allValues);
+}
+
+static NSArray<NSDictionary *> *VLMRegistryByReplacingRecords(NSArray *base, NSArray *updates) {
+    NSMutableDictionary<NSString *, NSDictionary *> *recordsByID = [NSMutableDictionary dictionary];
+    for (NSDictionary *record in VLMSanitizeRegistryRecords(base)) {
+        recordsByID[record[@"id"]] = record;
+    }
+    for (NSDictionary *record in VLMSanitizeRegistryRecords(updates)) {
+        recordsByID[record[@"id"]] = record;
+    }
+    return VLMSanitizeRegistryRecords(recordsByID.allValues);
 }
 
 NSDictionary<NSString *, id> *VLMReadPrefsDictionary(void) {
@@ -261,10 +321,12 @@ NSDictionary<NSString *, id> *VLMReadPrefsDictionary(void) {
     [keys addObject:VLMKnownItemsKey];
     [keys addObject:VLMMenuProfilesKey];
     [keys addObject:VLMGlobalRulesKey];
+    [keys addObject:VLMMenuPoliciesKey];
+    [keys addObject:VLMMenuRegistryKey];
 
     NSMutableDictionary<NSString *, id> *merged = [NSMutableDictionary dictionary];
     for (NSString *key in keys) {
-        if ([key isEqualToString:VLMMenuProfilesKey]) {
+        if ([key isEqualToString:VLMMenuProfilesKey] || [key isEqualToString:VLMMenuRegistryKey]) {
             continue;
         }
         id value = VLMPickPrefValue(sources, key);
@@ -272,10 +334,18 @@ NSDictionary<NSString *, id> *VLMReadPrefsDictionary(void) {
             merged[key] = value;
         }
     }
-    NSArray *profiles = VLMMergedProfilesFromSources(sources);
-    if (profiles.count > 0) {
-        merged[VLMMenuProfilesKey] = profiles;
+    NSDictionary *policyRoot = [merged[VLMMenuPoliciesKey] isKindOfClass:[NSDictionary class]]
+        ? merged[VLMMenuPoliciesKey] : nil;
+    id rawSchema = policyRoot[@"schema"];
+    NSInteger schema = [rawSchema respondsToSelector:@selector(integerValue)] ? [rawSchema integerValue] : 0;
+    if (schema < 2) {
+        NSArray *profiles = VLMMergedProfilesFromSources(sources);
+        if (profiles.count > 0) {
+            merged[VLMMenuProfilesKey] = profiles;
+        }
     }
+    NSArray *registry = VLMLatestRegistryFromSources(sources);
+    merged[VLMMenuRegistryKey] = registry;
     return merged;
 }
 
@@ -593,13 +663,24 @@ static NSArray *VLMDiskOnlyProfiles(void) {
     return VLMMergedProfilesFromSources(sources);
 }
 
+static NSArray *VLMDiskOnlyRegistry(void) {
+    NSMutableArray<NSDictionary *> *sources = [NSMutableArray array];
+    NSDictionary *anyHost = VLMCopyCFPrefs(kCFPreferencesAnyHost);
+    if (anyHost.count > 0) [sources addObject:anyHost];
+    NSDictionary *currentHost = VLMCopyCFPrefs(kCFPreferencesCurrentHost);
+    if (currentHost.count > 0) [sources addObject:currentHost];
+    for (NSString *path in VLMPrefsFilePaths()) {
+        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
+        if (dict.count > 0) [sources addObject:dict];
+    }
+    return VLMLatestRegistryFromSources(sources);
+}
+
 static dispatch_queue_t VLMBackgroundIngestQueue(void) {
-    static dispatch_queue_t queue;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        queue = dispatch_queue_create("com.qins.verticalmenu.ingest", DISPATCH_QUEUE_SERIAL);
-    });
-    return queue;
+    // Registry ingestion, policy migration and settings writes all mutate one
+    // preference snapshot. A shared serial queue prevents their replace/merge
+    // modes from overlapping and resurrecting stale records.
+    return VLMPrefsWriteQueue();
 }
 
 static dispatch_queue_t VLMPrefsWriteQueue(void) {
@@ -621,7 +702,7 @@ static void VLMIngestIncomingPrefsNow(void) {
     VLMTryUnsandbox();
     NSArray<NSString *> *paths = VLMIncomingPlistPathsForIngest();
     if (paths.count == 0) {
-        VLMMigrateToGlobalRulesIfNeeded();
+        VLMMigrateToPolicyV2IfNeeded();
         return;
     }
     VLMStorageLog(@"ingest paths=%lu sb=%d first=%@",
@@ -643,12 +724,21 @@ static void VLMIngestIncomingPrefsNow(void) {
     NSArray *profiles = VLMMergedProfilesFromSources((incoming.count > 0)
         ? [@[merged] arrayByAddingObjectsFromArray:incoming]
         : @[merged]);
+    NSArray *registry = VLMMergedRegistryFromSources((incoming.count > 0)
+        ? [@[merged] arrayByAddingObjectsFromArray:incoming]
+        : @[merged]);
     BOOL wrote = NO;
     gReplaceProfiles = YES;
     if (profiles.count > 0) {
         VLMWritePrefsValues(@{VLMMenuProfilesKey: profiles}, YES);
         wrote = YES;
     }
+    gReplaceRegistry = YES;
+    if (registry.count > 0) {
+        VLMWritePrefsValues(@{VLMMenuRegistryKey: registry}, YES);
+        wrote = YES;
+    }
+    gReplaceRegistry = NO;
     gReplaceProfiles = NO;
     if (wrote) {
         for (NSString *path in paths) {
@@ -659,7 +749,7 @@ static void VLMIngestIncomingPrefsNow(void) {
         }
     }
     gApplyingRemotePrefs = NO;
-    VLMMigrateToGlobalRulesIfNeeded();
+    VLMMigrateToPolicyV2IfNeeded();
 }
 
 void VLMIngestIncomingPrefs(void) {
@@ -683,7 +773,9 @@ void VLMIngestIncomingPrefs(void) {
 
 void VLMReplacePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp) {
     gReplaceProfiles = YES;
+    gReplaceRegistry = YES;
     VLMWritePrefsValues(updates, bumpStamp);
+    gReplaceRegistry = NO;
     gReplaceProfiles = NO;
 }
 
@@ -727,6 +819,9 @@ void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp) 
 
     if (changes[VLMMenuProfilesKey] && !gReplaceProfiles) {
         changes[VLMMenuProfilesKey] = VLMProfilesByReplacingProfiles(VLMDiskOnlyProfiles(), changes[VLMMenuProfilesKey]);
+    }
+    if (changes[VLMMenuRegistryKey] && !gReplaceRegistry) {
+        changes[VLMMenuRegistryKey] = VLMRegistryByReplacingRecords(VLMDiskOnlyRegistry(), changes[VLMMenuRegistryKey]);
     }
 
     VLMTryUnsandbox();
@@ -988,7 +1083,8 @@ static NSString *VLMExtractItemID(id item) {
         return item;
     }
     if ([item isKindOfClass:[NSDictionary class]]) {
-        return item[@"id"];
+        id itemID = item[@"id"];
+        return [itemID isKindOfClass:[NSString class]] ? itemID : nil;
     }
     return nil;
 }
@@ -1073,8 +1169,10 @@ static void VLMAppendKnownItem(NSMutableArray<NSDictionary *> *result, NSMutable
     NSString *itemID = nil;
     NSString *title = nil;
     if ([item isKindOfClass:[NSDictionary class]]) {
-        itemID = item[@"id"];
-        title = item[@"title"] ?: item[@"label"];
+        id rawID = item[@"id"];
+        id rawTitle = item[@"title"] ?: item[@"label"];
+        itemID = [rawID isKindOfClass:[NSString class]] ? rawID : nil;
+        title = [rawTitle isKindOfClass:[NSString class]] ? rawTitle : nil;
     } else if ([item isKindOfClass:[NSString class]]) {
         itemID = VLMCatalogIDForTitle(item) ?: [@"custom:" stringByAppendingString:item];
         title = item;
@@ -1477,6 +1575,180 @@ NSArray<NSDictionary *> *VLMRemoveProfile(NSArray *profiles, NSString *profileID
     return result;
 }
 
+static const NSUInteger kVLMRegistryItemsPerMenuLimit = 64;
+static const NSUInteger kVLMRegistryRecordLimit = 240;
+
+static NSDictionary *VLMNormalizedRegistryRecord(NSDictionary *record) {
+    if (![record isKindOfClass:[NSDictionary class]]) {
+        return nil;
+    }
+    id rawKind = record[@"kind"];
+    NSString *kind = [rawKind isKindOfClass:[NSString class]] && [rawKind isEqualToString:VLMMenuKindContext]
+        ? VLMMenuKindContext : VLMMenuKindEdit;
+    NSString *bundle = [record[@"bundle"] isKindOfClass:[NSString class]] ? record[@"bundle"] : @"";
+    NSMutableArray *scopedItems = [NSMutableArray array];
+    NSArray *rawItems = [record[@"items"] isKindOfClass:[NSArray class]] ? record[@"items"] : @[];
+    for (id rawItem in rawItems) {
+        if ([rawItem isKindOfClass:[NSString class]]) {
+            NSString *title = rawItem;
+            NSString *itemID = VLMCatalogIDForTitle(title);
+            if (itemID.length == 0) {
+                NSString *folded = VLMRulesFoldedText(title);
+                if (folded.length > 0) itemID = [NSString stringWithFormat:@"title:%@:%@", bundle, folded];
+            }
+            if (itemID.length > 0) [scopedItems addObject:@{@"id": itemID, @"title": title}];
+            continue;
+        }
+        if (![rawItem isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        NSMutableDictionary *item = [rawItem mutableCopy];
+        id rawID = item[@"id"];
+        id rawTitle = item[@"title"] ?: item[@"label"];
+        NSString *itemID = [rawID isKindOfClass:[NSString class]] ? rawID : nil;
+        NSString *title = [rawTitle isKindOfClass:[NSString class]] ? rawTitle : nil;
+        if ([itemID hasPrefix:@"custom:"] && title.length > 0) {
+            NSString *folded = VLMRulesFoldedText(title);
+            if (folded.length > 0) item[@"id"] = [NSString stringWithFormat:@"title:%@:%@", bundle, folded];
+        }
+        [scopedItems addObject:item];
+    }
+    NSArray<NSDictionary *> *items = VLMSanitizeProfileItems(scopedItems);
+    if (items.count > kVLMRegistryItemsPerMenuLimit) {
+        items = [items subarrayWithRange:NSMakeRange(0, kVLMRegistryItemsPerMenuLimit)];
+    }
+    if (items.count == 0 || bundle.length == 0) {
+        return nil;
+    }
+    id rawAppName = record[@"appName"];
+    NSString *appName = [rawAppName isKindOfClass:[NSString class]] ? rawAppName : nil;
+    id rawSeenAt = record[@"seenAt"];
+    NSNumber *seenAt = [rawSeenAt respondsToSelector:@selector(doubleValue)] ? @([rawSeenAt doubleValue]) : @0;
+    return @{
+        @"id": VLMProfileIDForMenu(kind, bundle, nil),
+        @"kind": kind,
+        @"bundle": bundle,
+        @"appName": appName.length > 0 ? appName : VLMGuessAppName(bundle),
+        @"items": items,
+        @"seenAt": seenAt,
+    };
+}
+
+static NSDictionary *VLMCombineRegistryRecords(NSDictionary *left, NSDictionary *right) {
+    if (!left) return right;
+    if (!right) return left;
+    NSTimeInterval leftSeen = [left[@"seenAt"] doubleValue];
+    NSTimeInterval rightSeen = [right[@"seenAt"] doubleValue];
+    NSDictionary *newer = rightSeen >= leftSeen ? right : left;
+    NSDictionary *older = newer == right ? left : right;
+    NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    for (NSDictionary *item in VLMProfileItems(newer)) {
+        VLMAppendKnownItem(items, seen, item);
+    }
+    for (NSDictionary *item in VLMProfileItems(older)) {
+        VLMAppendKnownItem(items, seen, item);
+    }
+    if (items.count > kVLMRegistryItemsPerMenuLimit) {
+        [items removeObjectsInRange:NSMakeRange(kVLMRegistryItemsPerMenuLimit,
+                                                items.count - kVLMRegistryItemsPerMenuLimit)];
+    }
+    NSMutableDictionary *combined = [newer mutableCopy];
+    combined[@"items"] = items;
+    combined[@"seenAt"] = @(MAX(leftSeen, rightSeen));
+    if (![combined[@"appName"] length] && [older[@"appName"] length]) {
+        combined[@"appName"] = older[@"appName"];
+    }
+    return VLMNormalizedRegistryRecord(combined);
+}
+
+NSArray<NSDictionary *> *VLMSanitizeRegistryRecords(id value) {
+    if (![value isKindOfClass:[NSArray class]]) {
+        return @[];
+    }
+    NSMutableArray<NSDictionary *> *records = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSNumber *> *indexByID = [NSMutableDictionary dictionary];
+    for (id valueRecord in (NSArray *)value) {
+        NSDictionary *record = VLMNormalizedRegistryRecord(valueRecord);
+        if (!record) continue;
+        NSString *recordID = record[@"id"];
+        NSNumber *existingIndex = indexByID[recordID];
+        if (existingIndex) {
+            NSUInteger index = existingIndex.unsignedIntegerValue;
+            records[index] = VLMCombineRegistryRecords(records[index], record);
+        } else {
+            indexByID[recordID] = @(records.count);
+            [records addObject:record];
+        }
+    }
+    [records sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+        NSTimeInterval leftSeen = [left[@"seenAt"] doubleValue];
+        NSTimeInterval rightSeen = [right[@"seenAt"] doubleValue];
+        if (leftSeen < rightSeen) return NSOrderedDescending;
+        if (leftSeen > rightSeen) return NSOrderedAscending;
+        return [VLMProfileDisplayTitle(left) compare:VLMProfileDisplayTitle(right)];
+    }];
+    if (records.count > kVLMRegistryRecordLimit) {
+        [records removeObjectsInRange:NSMakeRange(kVLMRegistryRecordLimit,
+                                                  records.count - kVLMRegistryRecordLimit)];
+    }
+    return records;
+}
+
+NSDictionary *VLMRegistryRecordWithID(NSArray *records, NSString *recordID) {
+    if (recordID.length == 0) return nil;
+    NSArray *values = [records isKindOfClass:[NSArray class]] ? records : @[];
+    for (id value in values) {
+        if (![value isKindOfClass:[NSDictionary class]]) continue;
+        NSDictionary *record = value;
+        if ([record[@"id"] isKindOfClass:[NSString class]] && [record[@"id"] isEqualToString:recordID]) return record;
+    }
+    return nil;
+}
+
+NSDictionary *_Nullable VLMBuildRegistryRecord(NSString *kind,
+                                               NSString *_Nullable bundleID,
+                                               NSString *_Nullable appName,
+                                               NSArray<NSDictionary *> *items,
+                                               NSDictionary *_Nullable existing) {
+    NSDictionary *incoming = VLMNormalizedRegistryRecord(@{
+        @"kind": kind ?: VLMMenuKindEdit,
+        @"bundle": bundleID ?: @"",
+        @"appName": appName.length ? appName : VLMGuessAppName(bundleID),
+        @"items": items ?: @[],
+        @"seenAt": @([[NSDate date] timeIntervalSince1970]),
+    });
+    return VLMCombineRegistryRecords(existing, incoming) ?: incoming;
+}
+
+NSArray<NSDictionary *> *VLMUpsertRegistryRecord(NSArray *records, NSDictionary *record) {
+    NSMutableArray<NSDictionary *> *result = [VLMSanitizeRegistryRecords(records) mutableCopy];
+    NSDictionary *clean = VLMNormalizedRegistryRecord(record);
+    if (!clean) return result ?: @[];
+    NSString *recordID = clean[@"id"];
+    NSUInteger index = [result indexOfObjectPassingTest:^BOOL(NSDictionary *candidate, NSUInteger idx, BOOL *stop) {
+        (void)idx;
+        (void)stop;
+        return [candidate[@"id"] isEqualToString:recordID];
+    }];
+    if (index == NSNotFound) {
+        [result addObject:clean];
+    } else {
+        result[index] = VLMCombineRegistryRecords(result[index], clean);
+    }
+    return VLMSanitizeRegistryRecords(result);
+}
+
+NSArray<NSDictionary *> *VLMRemoveRegistryRecord(NSArray *records, NSString *recordID) {
+    NSMutableArray<NSDictionary *> *result = [NSMutableArray array];
+    for (NSDictionary *record in VLMSanitizeRegistryRecords(records)) {
+        if (![record[@"id"] isEqualToString:recordID]) {
+            [result addObject:record];
+        }
+    }
+    return result;
+}
+
 static NSDictionary *VLMNormalizedGlobalRule(NSDictionary *rule, NSString *kind) {
     (void)kind;
     return VLMRulesNormalizedGlobalRule(rule, VLMCatalogItems());
@@ -1602,5 +1874,198 @@ void VLMMigrateToGlobalRulesIfNeeded(void) {
 void VLMMigrateToGlobalRulesIfNeededAsync(void) {
     dispatch_async(VLMPrefsWriteQueue(), ^{
         VLMMigrateToGlobalRulesIfNeeded();
+    });
+}
+
+static NSString *VLMNormalizedKind(NSString *kind) {
+    return [kind isEqualToString:VLMMenuKindContext] ? VLMMenuKindContext : VLMMenuKindEdit;
+}
+
+NSDictionary *VLMPolicyRootInPrefs(NSDictionary<NSString *, id> *prefs) {
+    NSDictionary *raw = [prefs[VLMMenuPoliciesKey] isKindOfClass:[NSDictionary class]] ? prefs[VLMMenuPoliciesKey] : @{};
+    NSDictionary *rawGlobal = [raw[@"global"] isKindOfClass:[NSDictionary class]] ? raw[@"global"] : @{};
+    NSDictionary *rawApps = [raw[@"apps"] isKindOfClass:[NSDictionary class]] ? raw[@"apps"] : @{};
+    NSMutableDictionary *global = [NSMutableDictionary dictionary];
+    global[VLMMenuKindEdit] = VLMRulesNormalizedPolicy(rawGlobal[VLMMenuKindEdit] ?: @{@"orderMode": VLMRulesOrderModeSystem});
+    global[VLMMenuKindContext] = VLMRulesNormalizedPolicy(rawGlobal[VLMMenuKindContext] ?: @{@"orderMode": VLMRulesOrderModeSystem});
+    NSMutableDictionary *apps = [NSMutableDictionary dictionary];
+    [rawApps enumerateKeysAndObjectsUsingBlock:^(id rawBundle, id rawKinds, BOOL *stop) {
+        (void)stop;
+        if (![rawBundle isKindOfClass:[NSString class]] || [rawBundle length] == 0 || ![rawKinds isKindOfClass:[NSDictionary class]]) {
+            return;
+        }
+        NSMutableDictionary *kinds = [NSMutableDictionary dictionary];
+        id edit = rawKinds[VLMMenuKindEdit];
+        id context = rawKinds[VLMMenuKindContext];
+        if ([edit isKindOfClass:[NSDictionary class]]) kinds[VLMMenuKindEdit] = VLMRulesNormalizedPolicy(edit);
+        if ([context isKindOfClass:[NSDictionary class]]) kinds[VLMMenuKindContext] = VLMRulesNormalizedPolicy(context);
+        if (kinds.count > 0) apps[rawBundle] = kinds;
+    }];
+    return @{
+        @"schema": @2,
+        @"global": global,
+        @"apps": apps,
+    };
+}
+
+NSDictionary *VLMGlobalPolicyForKindInPrefs(NSDictionary<NSString *, id> *prefs, NSString *kind) {
+    NSDictionary *root = [prefs[VLMMenuPoliciesKey] isKindOfClass:[NSDictionary class]] ? prefs[VLMMenuPoliciesKey] : @{};
+    NSDictionary *global = [root[@"global"] isKindOfClass:[NSDictionary class]] ? root[@"global"] : @{};
+    id raw = global[VLMNormalizedKind(kind)];
+    return VLMRulesNormalizedPolicy([raw isKindOfClass:[NSDictionary class]]
+        ? raw : @{@"orderMode": VLMRulesOrderModeSystem});
+}
+
+NSDictionary *VLMAppPolicyForKindInPrefs(NSDictionary<NSString *, id> *prefs, NSString *bundleID, NSString *kind) {
+    if (bundleID.length == 0) {
+        return VLMRulesNormalizedPolicy(@{@"orderMode": VLMRulesOrderModeInherit});
+    }
+    NSDictionary *root = [prefs[VLMMenuPoliciesKey] isKindOfClass:[NSDictionary class]] ? prefs[VLMMenuPoliciesKey] : @{};
+    NSDictionary *apps = [root[@"apps"] isKindOfClass:[NSDictionary class]] ? root[@"apps"] : @{};
+    NSDictionary *kinds = [apps[bundleID] isKindOfClass:[NSDictionary class]] ? apps[bundleID] : @{};
+    id raw = kinds[VLMNormalizedKind(kind)];
+    return VLMRulesNormalizedPolicy([raw isKindOfClass:[NSDictionary class]]
+        ? raw : @{@"orderMode": VLMRulesOrderModeInherit});
+}
+
+NSDictionary *VLMResolvedPolicyForKindInPrefs(NSDictionary<NSString *, id> *prefs, NSString *bundleID, NSString *kind) {
+    return VLMRulesResolvedPolicy(VLMGlobalPolicyForKindInPrefs(prefs, kind),
+                                  VLMAppPolicyForKindInPrefs(prefs, bundleID, kind));
+}
+
+static void VLMWritePolicy(NSString *bundleID, NSString *kind, NSDictionary *policy) {
+    NSDictionary *prefs = VLMReadPrefsDictionary();
+    NSMutableDictionary *root = [VLMPolicyRootInPrefs(prefs) mutableCopy];
+    NSString *key = VLMNormalizedKind(kind);
+    if (bundleID.length == 0) {
+        NSMutableDictionary *global = [root[@"global"] mutableCopy] ?: [NSMutableDictionary dictionary];
+        NSMutableDictionary *normalized = [VLMRulesNormalizedPolicy(policy) mutableCopy];
+        if ([normalized[@"orderMode"] isEqualToString:VLMRulesOrderModeInherit]) {
+            normalized[@"orderMode"] = VLMRulesOrderModeSystem;
+        }
+        global[key] = normalized;
+        root[@"global"] = global;
+    } else {
+        NSMutableDictionary *apps = [root[@"apps"] mutableCopy] ?: [NSMutableDictionary dictionary];
+        NSMutableDictionary *kinds = [apps[bundleID] mutableCopy] ?: [NSMutableDictionary dictionary];
+        kinds[key] = VLMRulesNormalizedPolicy(policy);
+        apps[bundleID] = kinds;
+        root[@"apps"] = apps;
+    }
+    root[@"schema"] = @2;
+    VLMWritePrefsValues(@{VLMMenuPoliciesKey: root}, YES);
+}
+
+static NSString *VLMV2ScopedLegacyID(NSString *itemID, NSString *bundleID, NSDictionary *profile) {
+    if (![itemID hasPrefix:@"custom:"] || bundleID.length == 0) return itemID;
+    NSString *title = [itemID substringFromIndex:7];
+    for (NSDictionary *item in VLMProfileItems(profile)) {
+        if ([item[@"id"] isEqualToString:itemID] && [item[@"title"] length] > 0) {
+            title = item[@"title"];
+            break;
+        }
+    }
+    NSString *folded = VLMRulesFoldedText(title);
+    return folded.length > 0 ? [NSString stringWithFormat:@"title:%@:%@", bundleID, folded] : itemID;
+}
+
+static NSArray<NSString *> *VLMV2ScopedLegacyIDs(NSArray<NSString *> *ids, NSString *bundleID, NSDictionary *profile) {
+    NSMutableArray<NSString *> *result = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    for (NSString *itemID in ids) {
+        NSString *next = VLMV2ScopedLegacyID(itemID, bundleID, profile);
+        if (next.length > 0 && ![seen containsObject:next]) {
+            [seen addObject:next];
+            [result addObject:next];
+        }
+    }
+    return result;
+}
+
+void VLMWriteGlobalPolicyAsync(NSString *kind, NSDictionary *policy) {
+    NSString *kindSnapshot = [kind copy];
+    NSDictionary *policySnapshot = [policy copy] ?: @{};
+    dispatch_async(VLMPrefsWriteQueue(), ^{
+        VLMWritePolicy(nil, kindSnapshot, policySnapshot);
+    });
+}
+
+void VLMWriteAppPolicyAsync(NSString *bundleID, NSString *kind, NSDictionary *policy) {
+    NSString *bundleSnapshot = [bundleID copy];
+    NSString *kindSnapshot = [kind copy];
+    NSDictionary *policySnapshot = [policy copy] ?: @{};
+    dispatch_async(VLMPrefsWriteQueue(), ^{
+        VLMWritePolicy(bundleSnapshot, kindSnapshot, policySnapshot);
+    });
+}
+
+void VLMMigrateToPolicyV2IfNeeded(void) {
+    if (!VLMIsSpringBoardProcess() && !VLMCurrentProcessIsPreferences()) {
+        return;
+    }
+    NSDictionary *prefs = VLMReadPrefsDictionary();
+    NSDictionary *rawRoot = [prefs[VLMMenuPoliciesKey] isKindOfClass:[NSDictionary class]] ? prefs[VLMMenuPoliciesKey] : nil;
+    id rawSchema = rawRoot[@"schema"];
+    BOOL hasV2 = [rawSchema respondsToSelector:@selector(integerValue)] && [rawSchema integerValue] >= 2;
+    if (hasV2) {
+        return;
+    }
+    NSArray<NSDictionary *> *legacyProfiles = VLMSanitizeProfiles(prefs[VLMMenuProfilesKey]);
+    NSArray<NSDictionary *> *registry = [prefs[VLMMenuRegistryKey] isKindOfClass:[NSArray class]]
+        ? prefs[VLMMenuRegistryKey] : @[];
+    for (NSDictionary *profile in legacyProfiles) {
+        registry = VLMUpsertRegistryRecord(registry, profile);
+    }
+
+    NSDictionary *legacyRules = [prefs[VLMGlobalRulesKey] isKindOfClass:[NSDictionary class]] ? prefs[VLMGlobalRulesKey] : nil;
+    if (![legacyRules[@"migrated"] boolValue]) {
+        legacyRules = VLMRulesMigratedGlobalRules(legacyRules,
+                                                   legacyProfiles,
+                                                   VLMSanitizeHiddenIDs(prefs[VLMHiddenItemsKey]),
+                                                   VLMCatalogItems(),
+                                                   VLMDefaultOrderIDs(),
+                                                   VLMMenuKindEdit,
+                                                   VLMMenuKindContext);
+    }
+    NSMutableDictionary *global = [NSMutableDictionary dictionary];
+    global[VLMMenuKindEdit] = VLMRulesPolicyFromLegacyRule(legacyRules[VLMMenuKindEdit], NO);
+    global[VLMMenuKindContext] = VLMRulesPolicyFromLegacyRule(legacyRules[VLMMenuKindContext], NO);
+    NSMutableDictionary *apps = [NSMutableDictionary dictionary];
+    for (NSDictionary *profile in legacyProfiles) {
+        NSString *bundle = profile[@"bundle"];
+        NSString *kind = VLMNormalizedKind(profile[@"kind"]);
+        if (bundle.length == 0) continue;
+        NSMutableDictionary *kinds = [apps[bundle] mutableCopy] ?: [NSMutableDictionary dictionary];
+        NSMutableDictionary *scopedProfile = [profile mutableCopy];
+        scopedProfile[@"hidden"] = VLMV2ScopedLegacyIDs(VLMProfileHiddenIDs(profile), bundle, profile);
+        scopedProfile[@"order"] = VLMV2ScopedLegacyIDs(VLMProfileDisplayOrder(profile), bundle, profile);
+        kinds[kind] = VLMRulesPolicyFromLegacyRule(scopedProfile, YES);
+        apps[bundle] = kinds;
+    }
+    NSDictionary *root = @{
+        @"schema": @2,
+        @"global": global,
+        @"apps": apps,
+    };
+    NSMutableDictionary *updates = [NSMutableDictionary dictionaryWithObject:root forKey:VLMMenuPoliciesKey];
+    if (registry.count > 0) updates[VLMMenuRegistryKey] = registry;
+    if (!prefs[VLMPolicyV1BackupKey]) {
+        updates[VLMPolicyV1BackupKey] = @{
+            VLMGlobalRulesKey: prefs[VLMGlobalRulesKey] ?: @{},
+            VLMMenuProfilesKey: prefs[VLMMenuProfilesKey] ?: @[],
+            VLMMenuOrderKey: prefs[VLMMenuOrderKey] ?: @[],
+            VLMCustomOrderKey: prefs[VLMCustomOrderKey] ?: @NO,
+            VLMKnownItemsKey: prefs[VLMKnownItemsKey] ?: @[],
+            VLMHiddenItemsKey: prefs[VLMHiddenItemsKey] ?: @[],
+        };
+    }
+    gReplaceRegistry = YES;
+    VLMWritePrefsValues(updates, YES);
+    gReplaceRegistry = NO;
+}
+
+void VLMMigrateToPolicyV2IfNeededAsync(void) {
+    dispatch_async(VLMPrefsWriteQueue(), ^{
+        VLMMigrateToPolicyV2IfNeeded();
     });
 }

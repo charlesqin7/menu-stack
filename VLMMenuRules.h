@@ -13,6 +13,25 @@ BOOL VLMRulesIsCapturedJunkItem(NSString *_Nullable title, NSString *_Nullable i
 
 NSString *VLMRulesProfileID(NSString *kind, NSString *_Nullable bundleID);
 
+extern NSString * const VLMRulesVisibilityInherit;
+extern NSString * const VLMRulesVisibilityShow;
+extern NSString * const VLMRulesVisibilityHide;
+extern NSString * const VLMRulesOrderModeInherit;
+extern NSString * const VLMRulesOrderModeSystem;
+extern NSString * const VLMRulesOrderModeCustom;
+
+NSDictionary *VLMRulesNormalizedPolicy(NSDictionary *_Nullable policy);
+NSDictionary *VLMRulesPolicyFromLegacyRule(NSDictionary *_Nullable rule,
+                                            BOOL appScoped);
+NSDictionary *VLMRulesResolvedPolicy(NSDictionary *_Nullable globalPolicy,
+                                     NSDictionary *_Nullable appPolicy);
+NSString *VLMRulesVisibilityForItem(NSDictionary *_Nullable policy,
+                                    NSString *_Nullable itemID);
+BOOL VLMRulesPolicyHasOrdering(NSDictionary *_Nullable policy);
+NSArray *VLMRulesApplyPolicyToItems(NSArray *items,
+                                    NSDictionary *_Nullable policy,
+                                    NSString *_Nullable (^_Nullable itemID)(id item));
+
 NSArray *VLMRulesApplyToItems(NSArray *items,
                               BOOL (^_Nullable isHidden)(id item),
                               NSArray<NSString *> *_Nullable orderIDs,

@@ -1,11 +1,19 @@
 #import "VLMMenuRules.h"
 
+NSString * const VLMRulesVisibilityInherit = @"inherit";
+NSString * const VLMRulesVisibilityShow = @"show";
+NSString * const VLMRulesVisibilityHide = @"hide";
+NSString * const VLMRulesOrderModeInherit = @"inherit";
+NSString * const VLMRulesOrderModeSystem = @"system";
+NSString * const VLMRulesOrderModeCustom = @"custom";
+
 static NSString *VLMRulesExtractItemID(id item) {
     if ([item isKindOfClass:[NSString class]]) {
         return item;
     }
     if ([item isKindOfClass:[NSDictionary class]]) {
-        return item[@"id"];
+        id itemID = item[@"id"];
+        return [itemID isKindOfClass:[NSString class]] ? itemID : nil;
     }
     return nil;
 }
@@ -179,6 +187,230 @@ NSString *VLMRulesProfileID(NSString *kind, NSString *bundleID) {
     return [NSString stringWithFormat:@"%@|%@", kind ?: @"", bundleID ?: @""];
 }
 
+static NSString *VLMRulesNormalizedVisibilityState(id value) {
+    if (![value isKindOfClass:[NSString class]]) {
+        return nil;
+    }
+    if ([value isEqualToString:VLMRulesVisibilityShow]) {
+        return VLMRulesVisibilityShow;
+    }
+    if ([value isEqualToString:VLMRulesVisibilityHide]) {
+        return VLMRulesVisibilityHide;
+    }
+    return nil;
+}
+
+static NSString *VLMRulesNormalizedOrderMode(id value, BOOL hasCustomFields) {
+    if (![value isKindOfClass:[NSString class]]) {
+        return hasCustomFields ? VLMRulesOrderModeCustom : VLMRulesOrderModeInherit;
+    }
+    if ([value isEqualToString:VLMRulesOrderModeSystem]) {
+        return VLMRulesOrderModeSystem;
+    }
+    if ([value isEqualToString:VLMRulesOrderModeCustom]) {
+        return VLMRulesOrderModeCustom;
+    }
+    if ([value isEqualToString:VLMRulesOrderModeInherit]) {
+        return VLMRulesOrderModeInherit;
+    }
+    return hasCustomFields ? VLMRulesOrderModeCustom : VLMRulesOrderModeInherit;
+}
+
+NSDictionary *VLMRulesNormalizedPolicy(NSDictionary *policy) {
+    NSDictionary *source = [policy isKindOfClass:[NSDictionary class]] ? policy : @{};
+    NSMutableDictionary<NSString *, NSString *> *visibility = [NSMutableDictionary dictionary];
+    NSDictionary *rawVisibility = [source[@"visibility"] isKindOfClass:[NSDictionary class]] ? source[@"visibility"] : @{};
+    for (id rawID in rawVisibility) {
+        if (![rawID isKindOfClass:[NSString class]] || [rawID length] == 0) {
+            continue;
+        }
+        NSString *state = VLMRulesNormalizedVisibilityState(rawVisibility[rawID]);
+        if (state) {
+            visibility[rawID] = state;
+        }
+    }
+    for (NSString *itemID in VLMRulesUniqueIDs(source[@"hidden"])) {
+        if (!visibility[itemID]) {
+            visibility[itemID] = VLMRulesVisibilityHide;
+        }
+    }
+
+    NSArray<NSString *> *first = VLMRulesUniqueIDs(source[@"first"]);
+    NSArray<NSString *> *relative = VLMRulesUniqueIDs(source[@"relative"] ?: source[@"order"]);
+    NSArray<NSString *> *last = VLMRulesUniqueIDs(source[@"last"]);
+    BOOL hasCustomFields = first.count > 0 || relative.count > 0 || last.count > 0;
+    NSString *orderMode = VLMRulesNormalizedOrderMode(source[@"orderMode"], hasCustomFields);
+    if ([orderMode isEqualToString:VLMRulesOrderModeCustom] && relative.count == 0 && first.count == 0 && last.count == 0) {
+        orderMode = VLMRulesOrderModeSystem;
+    }
+    return @{
+        @"visibility": visibility,
+        @"first": first,
+        @"relative": relative,
+        @"last": last,
+        @"orderMode": orderMode,
+    };
+}
+
+NSDictionary *VLMRulesPolicyFromLegacyRule(NSDictionary *rule, BOOL appScoped) {
+    NSDictionary *source = [rule isKindOfClass:[NSDictionary class]] ? rule : @{};
+    NSMutableDictionary<NSString *, NSString *> *visibility = [NSMutableDictionary dictionary];
+    for (NSString *itemID in VLMRulesUniqueIDs(source[@"hidden"])) {
+        visibility[itemID] = VLMRulesVisibilityHide;
+    }
+    id rawCustom = source[@"customOrder"];
+    BOOL custom = [rawCustom respondsToSelector:@selector(boolValue)] && [rawCustom boolValue];
+    return VLMRulesNormalizedPolicy(@{
+        @"visibility": visibility,
+        @"relative": custom ? VLMRulesUniqueIDs(source[@"order"]) : @[],
+        @"orderMode": custom ? VLMRulesOrderModeCustom : (appScoped ? VLMRulesOrderModeInherit : VLMRulesOrderModeSystem),
+    });
+}
+
+NSDictionary *VLMRulesResolvedPolicy(NSDictionary *globalPolicy, NSDictionary *appPolicy) {
+    NSDictionary *global = VLMRulesNormalizedPolicy(globalPolicy);
+    NSDictionary *app = VLMRulesNormalizedPolicy(appPolicy);
+    NSMutableDictionary<NSString *, NSString *> *visibility = [global[@"visibility"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    [app[@"visibility"] enumerateKeysAndObjectsUsingBlock:^(NSString *itemID, NSString *state, BOOL *stop) {
+        (void)stop;
+        visibility[itemID] = state;
+    }];
+
+    NSString *appMode = app[@"orderMode"];
+    NSDictionary *ordering = global;
+    if ([appMode isEqualToString:VLMRulesOrderModeCustom]) {
+        ordering = app;
+    } else if ([appMode isEqualToString:VLMRulesOrderModeSystem]) {
+        ordering = VLMRulesNormalizedPolicy(@{@"orderMode": VLMRulesOrderModeSystem});
+    }
+    NSString *resolvedMode = ordering[@"orderMode"];
+    if (![resolvedMode isEqualToString:VLMRulesOrderModeCustom]) {
+        resolvedMode = VLMRulesOrderModeSystem;
+    }
+    return @{
+        @"visibility": visibility,
+        @"first": ordering[@"first"] ?: @[],
+        @"relative": ordering[@"relative"] ?: @[],
+        @"last": ordering[@"last"] ?: @[],
+        @"orderMode": resolvedMode,
+    };
+}
+
+NSString *VLMRulesVisibilityForItem(NSDictionary *policy, NSString *itemID) {
+    if (itemID.length == 0) {
+        return VLMRulesVisibilityInherit;
+    }
+    NSDictionary *normalized = VLMRulesNormalizedPolicy(policy);
+    return normalized[@"visibility"][itemID] ?: VLMRulesVisibilityInherit;
+}
+
+BOOL VLMRulesPolicyHasOrdering(NSDictionary *policy) {
+    NSDictionary *normalized = VLMRulesNormalizedPolicy(policy);
+    return [normalized[@"orderMode"] isEqualToString:VLMRulesOrderModeCustom]
+        && ([normalized[@"first"] count] > 0 || [normalized[@"relative"] count] > 0 || [normalized[@"last"] count] > 0);
+}
+
+static NSInteger VLMRulesIndexInOrder(NSString *itemID, NSArray<NSString *> *order) {
+    NSUInteger index = itemID.length > 0 ? [order indexOfObject:itemID] : NSNotFound;
+    return index == NSNotFound ? NSIntegerMax : (NSInteger)index;
+}
+
+static NSArray *VLMRulesItemsSortedByOrder(NSArray *items,
+                                           NSArray<NSString *> *order,
+                                           NSString *(^itemID)(id item)) {
+    if (items.count < 2 || order.count == 0 || !itemID) {
+        return items;
+    }
+    NSMutableArray<NSDictionary *> *ranked = [NSMutableArray arrayWithCapacity:items.count];
+    [items enumerateObjectsUsingBlock:^(id item, NSUInteger index, BOOL *stop) {
+        (void)stop;
+        [ranked addObject:@{@"item": item, @"rank": @(VLMRulesIndexInOrder(itemID(item), order)), @"index": @(index)}];
+    }];
+    [ranked sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+        NSInteger leftRank = [left[@"rank"] integerValue];
+        NSInteger rightRank = [right[@"rank"] integerValue];
+        if (leftRank < rightRank) return NSOrderedAscending;
+        if (leftRank > rightRank) return NSOrderedDescending;
+        return [left[@"index"] compare:right[@"index"]];
+    }];
+    return [ranked valueForKey:@"item"];
+}
+
+NSArray *VLMRulesApplyPolicyToItems(NSArray *items,
+                                    NSDictionary *policy,
+                                    NSString *(^itemID)(id item)) {
+    if (items.count == 0) {
+        return items ?: @[];
+    }
+    NSDictionary *normalized = VLMRulesNormalizedPolicy(policy);
+    NSDictionary<NSString *, NSString *> *visibility = normalized[@"visibility"];
+    NSMutableArray *visible = [NSMutableArray arrayWithCapacity:items.count];
+    for (id item in items) {
+        NSString *identifier = itemID ? itemID(item) : nil;
+        NSString *state = identifier.length > 0 ? visibility[identifier] : nil;
+        if ([state isEqualToString:VLMRulesVisibilityHide]) {
+            continue;
+        }
+        [visible addObject:item];
+    }
+    if (!VLMRulesPolicyHasOrdering(normalized) || visible.count < 2 || !itemID) {
+        if (visible.count == items.count) {
+            return items;
+        }
+        return visible;
+    }
+
+    NSArray<NSString *> *firstOrder = normalized[@"first"];
+    NSArray<NSString *> *relativeOrder = normalized[@"relative"];
+    NSArray<NSString *> *lastOrder = normalized[@"last"];
+    NSSet<NSString *> *firstIDs = [NSSet setWithArray:firstOrder];
+    NSSet<NSString *> *lastIDs = [NSSet setWithArray:lastOrder];
+    NSMutableArray *first = [NSMutableArray array];
+    NSMutableArray *middle = [NSMutableArray array];
+    NSMutableArray *last = [NSMutableArray array];
+    for (id item in visible) {
+        NSString *identifier = itemID(item);
+        if (identifier.length > 0 && [firstIDs containsObject:identifier]) {
+            [first addObject:item];
+        } else if (identifier.length > 0 && [lastIDs containsObject:identifier]) {
+            [last addObject:item];
+        } else {
+            [middle addObject:item];
+        }
+    }
+    first = [VLMRulesItemsSortedByOrder(first, firstOrder, itemID) mutableCopy];
+    last = [VLMRulesItemsSortedByOrder(last, lastOrder, itemID) mutableCopy];
+
+    if (relativeOrder.count > 0 && middle.count > 1) {
+        NSSet<NSString *> *relativeIDs = [NSSet setWithArray:relativeOrder];
+        NSMutableArray<NSNumber *> *slots = [NSMutableArray array];
+        NSMutableArray *matched = [NSMutableArray array];
+        [middle enumerateObjectsUsingBlock:^(id item, NSUInteger index, BOOL *stop) {
+            (void)stop;
+            NSString *identifier = itemID(item);
+            if (identifier.length > 0 && [relativeIDs containsObject:identifier]) {
+                [slots addObject:@(index)];
+                [matched addObject:item];
+            }
+        }];
+        NSArray *sortedMatched = VLMRulesItemsSortedByOrder(matched, relativeOrder, itemID);
+        [slots enumerateObjectsUsingBlock:^(NSNumber *slot, NSUInteger index, BOOL *stop) {
+            (void)stop;
+            middle[slot.unsignedIntegerValue] = sortedMatched[index];
+        }];
+    }
+
+    NSMutableArray *result = [NSMutableArray arrayWithCapacity:visible.count];
+    [result addObjectsFromArray:first];
+    [result addObjectsFromArray:middle];
+    [result addObjectsFromArray:last];
+    BOOL unchanged = result.count == items.count;
+    for (NSUInteger index = 0; unchanged && index < result.count; index++) {
+        unchanged = result[index] == items[index];
+    }
+    return unchanged ? items : result;
+}
+
 static NSInteger VLMRulesRank(NSString *itemID, NSArray<NSString *> *orderIDs) {
     if (itemID.length == 0 || orderIDs.count == 0) {
         return NSIntegerMax;
@@ -206,7 +438,7 @@ NSArray *VLMRulesApplyToItems(NSArray *items,
         [visible addObject:item];
     }
     if (visible.count == 0) {
-        return items;
+        return @[];
     }
     NSArray *working = visible.count == items.count ? items : visible;
     if (!customOrder || orderIDs.count == 0 || !itemID || working.count < 2) {

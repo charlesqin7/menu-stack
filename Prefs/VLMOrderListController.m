@@ -2,31 +2,39 @@
 #import "../VLMMenuOrder.h"
 #import <objc/runtime.h>
 
-static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
+static const void *kVLMVisibilityItemIDKey = &kVLMVisibilityItemIDKey;
 
 @implementation VLMOrderListController {
     UITableView *_tableView;
-    NSMutableArray<NSString *> *_order;
-    NSMutableSet<NSString *> *_hidden;
+    NSMutableArray<NSString *> *_first;
+    NSMutableArray<NSString *> *_middle;
+    NSMutableArray<NSString *> *_last;
+    NSMutableDictionary<NSString *, NSString *> *_visibility;
     NSMutableDictionary<NSString *, NSString *> *_labels;
-    NSSet<NSString *> *_globalHidden;
     NSDictionary *_prefsSnapshot;
-    BOOL _customOrder;
+    NSDictionary *_globalPolicy;
+    NSDictionary *_registryRecord;
+    NSString *_bundleID;
+    NSString *_kind;
+    NSString *_orderMode;
 }
 
 - (instancetype)init {
     self = [super init];
     if (self) {
-        self.title = @"菜单排序";
-        _hidden = [NSMutableSet set];
+        self.title = @"菜单规则";
+        _first = [NSMutableArray array];
+        _middle = [NSMutableArray array];
+        _last = [NSMutableArray array];
+        _visibility = [NSMutableDictionary dictionary];
         _labels = [NSMutableDictionary dictionary];
-        _order = [NSMutableArray array];
-        _globalHidden = [NSSet set];
+        _orderMode = VLMRulesOrderModeInherit;
     }
     return self;
 }
 
 - (instancetype)initForContentSize:(CGSize)size {
+    (void)size;
     return [self init];
 }
 
@@ -35,21 +43,13 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
 }
 
 - (void)readSpecifierKind {
-    if (self.globalKind.length > 0) {
-        return;
-    }
+    if (self.globalKind.length > 0) return;
     id specifier = nil;
-    if ([self respondsToSelector:@selector(specifier)]) {
-        specifier = [self specifier];
-    }
+    if ([self respondsToSelector:@selector(specifier)]) specifier = [self specifier];
     NSString *key = nil;
     @try {
-        if ([specifier respondsToSelector:@selector(propertyForKey:)]) {
-            key = [specifier propertyForKey:@"key"];
-        }
-        if (![key isKindOfClass:[NSString class]] && [specifier respondsToSelector:@selector(identifier)]) {
-            key = [specifier identifier];
-        }
+        if ([specifier respondsToSelector:@selector(propertyForKey:)]) key = [specifier propertyForKey:@"key"];
+        if (![key isKindOfClass:[NSString class]] && [specifier respondsToSelector:@selector(identifier)]) key = [specifier identifier];
     } @catch (__unused NSException *exception) {
     }
     if ([key isEqualToString:@"GlobalEdit"] || [key isEqualToString:VLMMenuKindEdit]) {
@@ -61,28 +61,23 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
 
 - (void)loadView {
     UITableViewStyle style = UITableViewStyleGrouped;
-    if (@available(iOS 13.0, *)) {
-        style = UITableViewStyleInsetGrouped;
-    }
+    if (@available(iOS 13.0, *)) style = UITableViewStyleInsetGrouped;
     _tableView = [[UITableView alloc] initWithFrame:CGRectZero style:style];
     _tableView.delegate = self;
     _tableView.dataSource = self;
     _tableView.editing = YES;
     _tableView.allowsSelectionDuringEditing = YES;
-    _tableView.allowsSelection = YES;
     self.view = _tableView;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
     [self readSpecifierKind];
-    if ([self isGlobal]) {
-        self.title = [NSString stringWithFormat:@"%@ · 全局", VLMKindDisplayName(self.globalKind)];
-    }
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"恢复默认"
+    if ([self isGlobal]) self.title = [NSString stringWithFormat:@"%@ · 全局", VLMKindDisplayName(self.globalKind)];
+    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"重置"
                                                                               style:UIBarButtonItemStylePlain
                                                                              target:self
-                                                                             action:@selector(resetOrder)];
+                                                                             action:@selector(resetPolicy)];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -91,240 +86,302 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
     [self reloadFromPrefs];
 }
 
-- (NSDictionary *)currentProfile {
-    return VLMProfileWithID(_prefsSnapshot[VLMMenuProfilesKey], self.profileID);
+- (NSMutableArray<NSString *> *)itemsForSection:(NSInteger)section {
+    if (section == 1) return _first;
+    if (section == 2) return _middle;
+    if (section == 3) return _last;
+    return nil;
+}
+
+- (NSArray<NSString *> *)allKnownIDsForPrefs:(NSDictionary *)prefs policy:(NSDictionary *)policy {
+    NSMutableArray<NSString *> *ids = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    void (^appendItem)(NSDictionary *) = ^(NSDictionary *item) {
+        NSString *itemID = item[@"id"];
+        NSString *title = item[@"title"] ?: item[@"label"] ?: VLMLabelForItemID(itemID);
+        if (itemID.length == 0) return;
+        if (title.length > 0) self->_labels[itemID] = title;
+        if (![seen containsObject:itemID]) {
+            [seen addObject:itemID];
+            [ids addObject:itemID];
+        }
+    };
+    if ([self isGlobal]) {
+        for (NSDictionary *item in VLMCatalogItems()) appendItem(item);
+        NSArray<NSDictionary *> *registry = [prefs[VLMMenuRegistryKey] isKindOfClass:[NSArray class]]
+            ? prefs[VLMMenuRegistryKey] : @[];
+        for (NSDictionary *record in registry) {
+            if (![record[@"kind"] isEqualToString:_kind]) continue;
+            NSArray<NSDictionary *> *items = [record[@"items"] isKindOfClass:[NSArray class]] ? record[@"items"] : @[];
+            for (NSDictionary *item in items) {
+                // Title-only IDs are intentionally scoped to one App. Listing
+                // them as global rules would be misleading and can create a
+                // very large global page on devices with many dynamic menus.
+                if (![item[@"id"] hasPrefix:@"title:"]) appendItem(item);
+            }
+        }
+    } else {
+        NSArray<NSDictionary *> *items = [_registryRecord[@"items"] isKindOfClass:[NSArray class]]
+            ? _registryRecord[@"items"] : @[];
+        for (NSDictionary *item in items) appendItem(item);
+    }
+    for (NSString *field in @[@"first", @"relative", @"last"]) {
+        for (NSString *itemID in policy[field] ?: @[]) {
+            if (![seen containsObject:itemID]) {
+                [seen addObject:itemID];
+                [ids addObject:itemID];
+            }
+        }
+    }
+    return ids;
 }
 
 - (void)reloadFromPrefs {
-    NSDictionary *prefs = VLMReadPrefsDictionary();
-    _prefsSnapshot = prefs;
+    _prefsSnapshot = VLMReadPrefsDictionary();
     _labels = [NSMutableDictionary dictionary];
     if ([self isGlobal]) {
-        NSDictionary *rule = VLMGlobalRuleForKindInPrefs(prefs, self.globalKind);
-        _order = [rule[@"order"] mutableCopy] ?: [NSMutableArray array];
-        _hidden = [NSMutableSet setWithArray:rule[@"hidden"] ?: @[]];
-        _customOrder = [rule[@"customOrder"] boolValue];
-        for (NSDictionary *item in rule[@"items"] ?: @[]) {
-            NSString *itemID = item[@"id"];
-            NSString *title = item[@"title"] ?: VLMLabelForItemID(itemID);
-            if (itemID.length > 0 && title.length > 0) {
-                _labels[itemID] = title;
-            }
-        }
-        _globalHidden = [NSSet set];
+        _kind = self.globalKind ?: VLMMenuKindEdit;
+        _bundleID = nil;
+        _globalPolicy = VLMGlobalPolicyForKindInPrefs(_prefsSnapshot, _kind);
+        _registryRecord = nil;
     } else {
-        NSDictionary *profile = [self currentProfile];
-        _order = [VLMProfileDisplayOrder(profile) mutableCopy];
-        _hidden = [NSMutableSet setWithArray:VLMProfileHiddenIDs(profile)];
-        for (NSDictionary *item in VLMProfileItems(profile)) {
-            NSString *itemID = item[@"id"];
-            NSString *title = item[@"title"] ?: VLMLabelForItemID(itemID);
-            if (itemID.length > 0 && title.length > 0) {
-                _labels[itemID] = title;
-            }
+        _registryRecord = VLMRegistryRecordWithID(_prefsSnapshot[VLMMenuRegistryKey], self.profileID);
+        if (!_registryRecord) {
+            [self.navigationController popViewControllerAnimated:YES];
+            return;
         }
-        NSString *kind = profile[@"kind"] ?: VLMMenuKindEdit;
-        NSDictionary *globalRule = VLMGlobalRuleForKindInPrefs(prefs, kind);
-        _globalHidden = [NSSet setWithArray:globalRule[@"hidden"] ?: @[]];
-        _customOrder = VLMProfileCustomOrder(profile);
+        _kind = _registryRecord[@"kind"] ?: VLMMenuKindEdit;
+        _bundleID = _registryRecord[@"bundle"] ?: @"";
+        _globalPolicy = VLMGlobalPolicyForKindInPrefs(_prefsSnapshot, _kind);
     }
-    for (NSString *itemID in _order) {
-        if (!_labels[itemID]) {
-            _labels[itemID] = VLMLabelForItemID(itemID) ?: itemID;
-        }
+    NSDictionary *policy = [self isGlobal]
+        ? _globalPolicy
+        : VLMAppPolicyForKindInPrefs(_prefsSnapshot, _bundleID, _kind);
+    policy = VLMRulesNormalizedPolicy(policy);
+    _visibility = [policy[@"visibility"] mutableCopy] ?: [NSMutableDictionary dictionary];
+    _orderMode = policy[@"orderMode"] ?: ([self isGlobal] ? VLMRulesOrderModeSystem : VLMRulesOrderModeInherit);
+    NSArray<NSString *> *all = [self allKnownIDsForPrefs:_prefsSnapshot policy:policy];
+
+    NSDictionary *displayPolicy = policy;
+    if (![_orderMode isEqualToString:VLMRulesOrderModeCustom]) {
+        displayPolicy = VLMRulesNormalizedPolicy(@{@"orderMode": VLMRulesOrderModeSystem});
+    } else {
+        NSMutableDictionary *withoutVisibility = [policy mutableCopy];
+        withoutVisibility[@"visibility"] = @{};
+        displayPolicy = withoutVisibility;
+    }
+    NSArray<NSString *> *displayOrder = VLMRulesApplyPolicyToItems(all, displayPolicy, ^NSString *(id item) { return item; });
+    NSSet *firstIDs = [_orderMode isEqualToString:VLMRulesOrderModeCustom] ? [NSSet setWithArray:policy[@"first"] ?: @[]] : [NSSet set];
+    NSSet *lastIDs = [_orderMode isEqualToString:VLMRulesOrderModeCustom] ? [NSSet setWithArray:policy[@"last"] ?: @[]] : [NSSet set];
+    _first = [NSMutableArray array];
+    _middle = [NSMutableArray array];
+    _last = [NSMutableArray array];
+    for (NSString *itemID in displayOrder) {
+        if ([firstIDs containsObject:itemID]) [_first addObject:itemID];
+        else if ([lastIDs containsObject:itemID]) [_last addObject:itemID];
+        else [_middle addObject:itemID];
+        if (!_labels[itemID]) _labels[itemID] = VLMLabelForItemID(itemID) ?: itemID;
     }
     [_tableView reloadData];
 }
 
-- (void)writePrefsAndEnableCustomSort:(BOOL)enableCustomSort {
-    if (enableCustomSort) {
-        _customOrder = YES;
-    }
-    if ([self isGlobal]) {
-        NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
-        for (NSString *itemID in _order) {
-            [items addObject:@{
-                @"id": itemID,
-                @"title": _labels[itemID] ?: VLMLabelForItemID(itemID) ?: itemID,
-            }];
-        }
-        VLMWriteGlobalRuleAsync(self.globalKind, _order, _hidden.allObjects, items, _customOrder);
-        return;
-    }
-    NSDictionary *existing = [self currentProfile];
-    if (!existing) {
-        return;
-    }
-    NSMutableDictionary *updated = [existing mutableCopy];
-    updated[@"order"] = [_order copy] ?: @[];
-    updated[@"hidden"] = _hidden.allObjects ?: @[];
-    updated[@"customOrder"] = @(_customOrder);
-    NSArray *profiles = VLMUpsertProfile(_prefsSnapshot[VLMMenuProfilesKey], updated);
-    NSMutableDictionary *nextPrefs = [_prefsSnapshot mutableCopy] ?: [NSMutableDictionary dictionary];
-    nextPrefs[VLMMenuProfilesKey] = profiles;
-    _prefsSnapshot = nextPrefs;
-    NSDictionary *profileSnapshot = VLMProfileWithID(profiles, self.profileID) ?: updated;
-    VLMWritePrefsValuesAsync(@{VLMMenuProfilesKey: @[profileSnapshot]}, YES);
+- (NSDictionary *)currentPolicy {
+    BOOL customOrder = [_orderMode isEqualToString:VLMRulesOrderModeCustom];
+    return VLMRulesNormalizedPolicy(@{
+        @"visibility": _visibility ?: @{},
+        @"first": customOrder ? (_first ?: @[]) : @[],
+        @"relative": customOrder ? (_middle ?: @[]) : @[],
+        @"last": customOrder ? (_last ?: @[]) : @[],
+        @"orderMode": _orderMode ?: ([self isGlobal] ? VLMRulesOrderModeSystem : VLMRulesOrderModeInherit),
+    });
 }
 
-- (void)resetOrder {
-    if ([self isGlobal]) {
-        NSMutableArray<NSString *> *ids = [VLMDefaultOrderIDs() mutableCopy];
-        NSMutableSet<NSString *> *seen = [NSMutableSet setWithArray:ids];
-        for (NSString *itemID in _order) {
-            if (itemID.length && ![seen containsObject:itemID]) {
-                [ids addObject:itemID];
-                [seen addObject:itemID];
-            }
-        }
-        _order = ids;
-        [_hidden removeAllObjects];
-        NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
-        for (NSString *itemID in _order) {
-            [items addObject:@{
-                @"id": itemID,
-                @"title": _labels[itemID] ?: VLMLabelForItemID(itemID) ?: itemID,
-            }];
-        }
-        _customOrder = NO;
-        VLMWriteGlobalRuleAsync(self.globalKind, _order, @[], items, NO);
-        [_tableView reloadData];
-        return;
-    }
-    NSDictionary *profile = [self currentProfile];
-    NSMutableArray<NSString *> *ids = [NSMutableArray array];
-    for (NSDictionary *item in VLMProfileItems(profile)) {
-        if (item[@"id"]) {
-            [ids addObject:item[@"id"]];
-        }
-    }
-    _order = ids;
-    [_hidden removeAllObjects];
-    NSMutableDictionary *updated = [profile mutableCopy] ?: [NSMutableDictionary dictionary];
-    updated[@"order"] = [_order copy] ?: @[];
-    updated[@"hidden"] = @[];
-    updated[@"customOrder"] = @NO;
-    _customOrder = NO;
-    NSArray *profiles = VLMUpsertProfile(_prefsSnapshot[VLMMenuProfilesKey], updated);
-    NSMutableDictionary *nextPrefs = [_prefsSnapshot mutableCopy] ?: [NSMutableDictionary dictionary];
-    nextPrefs[VLMMenuProfilesKey] = profiles;
-    _prefsSnapshot = nextPrefs;
-    NSDictionary *profileSnapshot = VLMProfileWithID(profiles, self.profileID) ?: updated;
-    VLMWritePrefsValuesAsync(@{VLMMenuProfilesKey: @[profileSnapshot]}, YES);
+- (void)writePolicy {
+    NSDictionary *policy = [self currentPolicy];
+    if ([self isGlobal]) VLMWriteGlobalPolicyAsync(_kind, policy);
+    else VLMWriteAppPolicyAsync(_bundleID, _kind, policy);
+}
+
+- (void)resetPolicy {
+    _visibility = [NSMutableDictionary dictionary];
+    _first = [NSMutableArray array];
+    _last = [NSMutableArray array];
+    _orderMode = [self isGlobal] ? VLMRulesOrderModeSystem : VLMRulesOrderModeInherit;
+    _middle = [[self allKnownIDsForPrefs:_prefsSnapshot policy:@{}] mutableCopy];
+    [self writePolicy];
     [_tableView reloadData];
 }
 
-- (void)toggleHiddenForItemID:(NSString *)itemID {
-    if (itemID.length == 0) {
-        return;
-    }
-    if ([_globalHidden containsObject:itemID]) {
-        return;
-    }
-    if ([_hidden containsObject:itemID]) {
-        [_hidden removeObject:itemID];
+- (void)orderModeChanged:(UISegmentedControl *)control {
+    if ([self isGlobal]) {
+        _orderMode = control.selectedSegmentIndex == 0 ? VLMRulesOrderModeSystem : VLMRulesOrderModeCustom;
     } else {
-        [_hidden addObject:itemID];
+        _orderMode = control.selectedSegmentIndex == 0 ? VLMRulesOrderModeInherit
+            : (control.selectedSegmentIndex == 1 ? VLMRulesOrderModeSystem : VLMRulesOrderModeCustom);
     }
-    [self writePrefsAndEnableCustomSort:NO];
-    NSUInteger row = [_order indexOfObject:itemID];
-    if (row != NSNotFound) {
-        [_tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:(NSInteger)row inSection:0]]
-                          withRowAnimation:UITableViewRowAnimationNone];
+    if (![_orderMode isEqualToString:VLMRulesOrderModeCustom]) {
+        _first = [NSMutableArray array];
+        _middle = [[self allKnownIDsForPrefs:_prefsSnapshot policy:@{}] mutableCopy];
+        _last = [NSMutableArray array];
     }
+    [self writePolicy];
+    [_tableView reloadData];
 }
 
-- (void)visibilitySwitchChanged:(UISwitch *)toggle {
-    NSString *itemID = objc_getAssociatedObject(toggle, kVLMSwitchItemIDKey);
-    if (itemID.length == 0) {
-        return;
-    }
-    if ([_globalHidden containsObject:itemID]) {
-        toggle.on = NO;
-        return;
-    }
-    if (toggle.on) {
-        [_hidden removeObject:itemID];
+- (void)visibilityChanged:(UISegmentedControl *)control {
+    NSString *itemID = objc_getAssociatedObject(control, kVLMVisibilityItemIDKey);
+    if (itemID.length == 0) return;
+    if ([self isGlobal]) {
+        if (control.selectedSegmentIndex == 1) _visibility[itemID] = VLMRulesVisibilityHide;
+        else [_visibility removeObjectForKey:itemID];
     } else {
-        [_hidden addObject:itemID];
+        if (control.selectedSegmentIndex == 0) [_visibility removeObjectForKey:itemID];
+        else if (control.selectedSegmentIndex == 1) _visibility[itemID] = VLMRulesVisibilityShow;
+        else _visibility[itemID] = VLMRulesVisibilityHide;
     }
-    [self writePrefsAndEnableCustomSort:NO];
-    NSUInteger row = [_order indexOfObject:itemID];
-    if (row != NSNotFound) {
-        [_tableView reloadRowsAtIndexPaths:@[[NSIndexPath indexPathForRow:(NSInteger)row inSection:0]]
-                          withRowAnimation:UITableViewRowAnimationNone];
-    }
+    [self writePolicy];
+    [_tableView reloadData];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 1;
+    (void)tableView;
+    return 4;
 }
 
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return (NSInteger)_order.count;
+    (void)tableView;
+    if (section == 0) return 1;
+    return MAX(1, (NSInteger)[[self itemsForSection:section] count]);
+}
+
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    (void)tableView;
+    if (section == 0) return @"顺序策略";
+    if (section == 1) return @"固定到前面";
+    if (section == 2) return @"跟随系统 / 相对顺序";
+    return @"固定到后面";
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if ([self isGlobal]) {
-        return @"对所有 App 生效。某次弹出没有的项会被跳过。关闭开关即隐藏；拖动右边横条后按这个全局顺序排列。某个 App 还要多藏几项时，用上一页的「按 App 例外」。";
+    (void)tableView;
+    if (section == 0) {
+        return [self isGlobal]
+            ? @"“系统”保留 App 原顺序；“自定义”只调整已记录项目，新出现的动态项目保留系统位置。"
+            : @"可继承全局、恢复此 App 的系统顺序，或建立此 App 自己的顺序。";
     }
-    return @"这里是这个 App 最近一次弹出时出现的项。关闭开关会在这个 App 里额外隐藏该项。拖动右边横条后才会覆盖全局顺序。全局已经隐藏的项不能在这里打开。";
+    if (section == 2) return @"拖动只改变同一菜单层级内已知项目的相对次序；系统后来加入的项目不会被统一挤到末尾。";
+    return nil;
 }
 
-- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
-    static NSString *identifier = @"VLMOrderCell";
+- (UITableViewCell *)orderModeCellForTableView:(UITableView *)tableView {
+    static NSString *identifier = @"VLMPolicyModeCell";
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
-    if (!cell) {
-        cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:identifier];
-        cell.selectionStyle = UITableViewCellSelectionStyleNone;
-    }
-    NSString *itemID = _order[indexPath.row];
-    BOOL globallyHidden = [_globalHidden containsObject:itemID];
-    BOOL hidden = globallyHidden || [_hidden containsObject:itemID];
-    cell.textLabel.text = _labels[itemID] ?: VLMLabelForItemID(itemID) ?: itemID;
-    if (globallyHidden) {
-        cell.detailTextLabel.text = @"全局已隐藏，不能在这个 App 里打开";
-    } else {
-        cell.detailTextLabel.text = hidden ? @"已隐藏，弹出菜单中不显示" : @"显示";
-    }
-    cell.textLabel.textColor = hidden ? [UIColor secondaryLabelColor] : [UIColor labelColor];
-    cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
-
-    UISwitch *toggle = [[UISwitch alloc] init];
-    toggle.on = !hidden;
-    toggle.enabled = !globallyHidden;
-    objc_setAssociatedObject(toggle, kVLMSwitchItemIDKey, itemID, OBJC_ASSOCIATION_COPY_NONATOMIC);
-    [toggle addTarget:self action:@selector(visibilitySwitchChanged:) forControlEvents:UIControlEventValueChanged];
-    cell.editingAccessoryView = toggle;
-    cell.accessoryView = nil;
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:identifier];
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    NSArray *titles = [self isGlobal] ? @[@"系统", @"自定义"] : @[@"继承", @"系统", @"自定义"];
+    UISegmentedControl *control = [[UISegmentedControl alloc] initWithItems:titles];
+    if ([self isGlobal]) control.selectedSegmentIndex = [_orderMode isEqualToString:VLMRulesOrderModeCustom] ? 1 : 0;
+    else control.selectedSegmentIndex = [_orderMode isEqualToString:VLMRulesOrderModeCustom] ? 2
+        : ([_orderMode isEqualToString:VLMRulesOrderModeSystem] ? 1 : 0);
+    [control addTarget:self action:@selector(orderModeChanged:) forControlEvents:UIControlEventValueChanged];
+    cell.textLabel.text = @"菜单顺序";
+    cell.accessoryView = control;
+    cell.editingAccessoryView = control;
     return cell;
 }
 
-- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
-    [tableView deselectRowAtIndexPath:indexPath animated:YES];
-    [self toggleHiddenForItemID:_order[indexPath.row]];
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0) return [self orderModeCellForTableView:tableView];
+    NSArray<NSString *> *sectionItems = [self itemsForSection:indexPath.section];
+    if (sectionItems.count == 0) {
+        static NSString *placeholderIdentifier = @"VLMPolicyDropPlaceholderCell";
+        UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:placeholderIdentifier];
+        if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleDefault reuseIdentifier:placeholderIdentifier];
+        cell.selectionStyle = UITableViewCellSelectionStyleNone;
+        cell.textLabel.text = @"拖到这里";
+        cell.textLabel.textColor = [UIColor tertiaryLabelColor];
+        cell.accessoryView = nil;
+        cell.editingAccessoryView = nil;
+        return cell;
+    }
+    static NSString *identifier = @"VLMPolicyItemCell";
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:identifier];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:identifier];
+    cell.selectionStyle = UITableViewCellSelectionStyleNone;
+    NSString *itemID = sectionItems[indexPath.row];
+    NSString *state = _visibility[itemID] ?: VLMRulesVisibilityInherit;
+    NSString *effectiveGlobal = VLMRulesVisibilityForItem(_globalPolicy, itemID);
+    cell.textLabel.text = _labels[itemID] ?: VLMLabelForItemID(itemID) ?: itemID;
+    if ([self isGlobal]) {
+        cell.detailTextLabel.text = [state isEqualToString:VLMRulesVisibilityHide] ? @"全局隐藏" : @"系统提供时显示";
+    } else if ([state isEqualToString:VLMRulesVisibilityShow]) {
+        cell.detailTextLabel.text = @"此 App 显示（系统提供时）";
+    } else if ([state isEqualToString:VLMRulesVisibilityHide]) {
+        cell.detailTextLabel.text = @"此 App 隐藏";
+    } else {
+        cell.detailTextLabel.text = [effectiveGlobal isEqualToString:VLMRulesVisibilityHide] ? @"继承全局：隐藏" : @"继承全局：显示";
+    }
+    cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
+    cell.textLabel.textColor = ([state isEqualToString:VLMRulesVisibilityHide]
+        || ([state isEqualToString:VLMRulesVisibilityInherit] && [effectiveGlobal isEqualToString:VLMRulesVisibilityHide]))
+        ? [UIColor secondaryLabelColor] : [UIColor labelColor];
+
+    NSArray *segments = [self isGlobal] ? @[@"显示", @"隐藏"] : @[@"继承", @"显示", @"隐藏"];
+    UISegmentedControl *control = [[UISegmentedControl alloc] initWithItems:segments];
+    if ([self isGlobal]) control.selectedSegmentIndex = [state isEqualToString:VLMRulesVisibilityHide] ? 1 : 0;
+    else control.selectedSegmentIndex = [state isEqualToString:VLMRulesVisibilityShow] ? 1
+        : ([state isEqualToString:VLMRulesVisibilityHide] ? 2 : 0);
+    control.transform = CGAffineTransformMakeScale(0.82, 0.82);
+    objc_setAssociatedObject(control, kVLMVisibilityItemIDKey, itemID, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    [control addTarget:self action:@selector(visibilityChanged:) forControlEvents:UIControlEventValueChanged];
+    cell.editingAccessoryView = control;
+    cell.accessoryView = control;
+    return cell;
 }
 
 - (BOOL)tableView:(UITableView *)tableView canMoveRowAtIndexPath:(NSIndexPath *)indexPath {
-    return YES;
+    (void)tableView;
+    NSArray *items = [self itemsForSection:indexPath.section];
+    return indexPath.section >= 1 && indexPath.row < (NSInteger)items.count;
 }
 
 - (UITableViewCellEditingStyle)tableView:(UITableView *)tableView editingStyleForRowAtIndexPath:(NSIndexPath *)indexPath {
+    (void)tableView;
+    (void)indexPath;
     return UITableViewCellEditingStyleNone;
 }
 
 - (BOOL)tableView:(UITableView *)tableView shouldIndentWhileEditingRowAtIndexPath:(NSIndexPath *)indexPath {
+    (void)tableView;
+    (void)indexPath;
     return NO;
 }
 
-- (void)tableView:(UITableView *)tableView moveRowAtIndexPath:(NSIndexPath *)sourceIndexPath toIndexPath:(NSIndexPath *)destinationIndexPath {
-    if (sourceIndexPath.row == destinationIndexPath.row) {
-        return;
+- (NSIndexPath *)tableView:(UITableView *)tableView
+targetIndexPathForMoveFromRowAtIndexPath:(NSIndexPath *)sourceIndexPath
+       toProposedIndexPath:(NSIndexPath *)proposedDestinationIndexPath {
+    (void)tableView;
+    (void)sourceIndexPath;
+    if (proposedDestinationIndexPath.section < 1) {
+        return [NSIndexPath indexPathForRow:0 inSection:1];
     }
-    NSString *itemID = _order[sourceIndexPath.row];
-    [_order removeObjectAtIndex:sourceIndexPath.row];
-    [_order insertObject:itemID atIndex:destinationIndexPath.row];
-    [self writePrefsAndEnableCustomSort:YES];
+    return proposedDestinationIndexPath;
+}
+
+- (void)tableView:(UITableView *)tableView
+moveRowAtIndexPath:(NSIndexPath *)sourceIndexPath
+       toIndexPath:(NSIndexPath *)destinationIndexPath {
+    (void)tableView;
+    NSMutableArray *source = [self itemsForSection:sourceIndexPath.section];
+    NSMutableArray *destination = [self itemsForSection:destinationIndexPath.section];
+    if (!source || !destination) return;
+    NSString *itemID = source[sourceIndexPath.row];
+    [source removeObjectAtIndex:sourceIndexPath.row];
+    NSInteger row = MIN(destinationIndexPath.row, (NSInteger)destination.count);
+    [destination insertObject:itemID atIndex:(NSUInteger)row];
+    _orderMode = VLMRulesOrderModeCustom;
+    [self writePolicy];
+    [_tableView reloadData];
 }
 
 @end
