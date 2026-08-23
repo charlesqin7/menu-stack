@@ -796,7 +796,6 @@ static void VLMApplyFallbackImageToButton(UIButton *button, UIColor *tint) {
         if (config && !VLMImageIsUsableIcon(config.image)) {
             UIButtonConfiguration *updated = [config copy];
             updated.image = fallback;
-            updated.imagePlacement = UIButtonConfigurationPlacementLeading;
             if (updated.imagePadding < 8.0) {
                 updated.imagePadding = 10.0;
             }
