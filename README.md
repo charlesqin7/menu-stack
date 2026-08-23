@@ -53,6 +53,9 @@ Makefile                 Theos 主工程，默认 rootless
 control                  deb 元数据
 VerticalMenu.plist       注入 com.apple.UIKit（所有 UIKit 进程）
 Tweak.x                  Logos hook
+VLMMenuRules.h/.m        可独立测试的菜单匹配、排序、隐藏与迁移规则
+VLMMenuOrder.h/.m        设置持久化、跨进程同步和规则数据适配
+Tests/                   Foundation 规则测试与工程元数据检查
 Prefs/                   设置 App 里的「纵向菜单」开关与菜单排序页（含图标）
 layout/Library/PreferenceLoader/Preferences/
                          VerticalMenu.plist 设置入口（含图标）
@@ -99,11 +102,21 @@ make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
 
 把对应越狱环境的 deb 拷到手机，用 Sileo / Zebra / `dpkg -i` 安装，然后 respring。设置里的「纵向菜单」由 PreferenceLoader 打开 PreferenceBundle（`VerticalMenuPrefs`），里面可以开关功能并拖动调整菜单顺序。
 
-每次往 `main` 的 push 会跑 `.github/workflows/build.yml`：
+PR、手动运行以及每次往 `main` 的 push 都会跑 `.github/workflows/build.yml`：
 
-1. 分别编译 **rootless** 和 **roothide** 两份 `.deb`
-2. 作为 Actions artifact 上传（`verticalmenu-rootless` / `verticalmenu-roothide`，以及合并后的 `release`）
-3. 构建成功后发布到 GitHub Releases（标签 `v` + `control` 里的版本号，例如 [Releases](https://github.com/charlesqin7/menu-stack/releases)），deb 挂在该 Release 下面
+1. 先检查 plist / 版本一致性并运行 Foundation 菜单规则测试
+2. 分别编译 **rootless** 和 **roothide** 两份 `.deb`
+3. 作为 Actions artifact 上传（`verticalmenu-rootless` / `verticalmenu-roothide`，以及合并后的 `release`）
+4. 只有 `main` push 且 `control` 对应的版本标签尚不存在时才发布 GitHub Release；已有标签和 Release 永不覆盖
+
+发布新版本前，要同时更新 `control` 与 `Prefs/Resources/Info.plist` 里的版本号。创建 Release 标签不会再次触发一轮构建。
+
+在 macOS 本地可先运行：
+
+```bash
+bash Tests/validate-project.sh
+bash Tests/run-tests.sh
+```
 
 RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把 Safari 从多任务划掉再开。
 
@@ -121,6 +134,11 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 2. 任意输入框选中文字：拷贝菜单应为纵向列表，一次最多 5 项，其余可上下滑；靠近屏幕顶部选字时不应顶进状态栏。
 3. Safari 长按链接：若系统给了 palette / compact 行，应变纵向；本来就是竖列表的动作区保持竖列表。
 4. 设置里打开「文本选择 · 全局」，把「粘贴」拖到最上面：各 App 选中文字后弹出的菜单第一项应是粘贴。
+5. 关闭「上下文菜单」并重新打开目标 App：系统上下文菜单应完全恢复原样，不再应用全局排序或隐藏。
+6. 关闭「文本选择菜单」并重新打开目标 App：拷贝 / 粘贴菜单应恢复系统原始横条。
+7. 在「按 App 例外」里只隐藏某个 App 的一项：其它 App 仍应显示该项；全局隐藏项不能在 App 例外里重新打开。
+8. 打开键盘并在屏幕顶部、底部各选一次文字：菜单不得进入状态栏、灵动岛或键盘区域；超过 5 项时仍可顺畅上下滑。
+9. 关闭「调试日志」时只应看到一次插件加载确认；打开后再弹出菜单，才应出现布局、记录和设置持久化细节。
 
 ## 没生效时怎么查
 

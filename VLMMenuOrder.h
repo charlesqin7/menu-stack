@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import "VLMMenuRules.h"
 
 NS_ASSUME_NONNULL_BEGIN
 
@@ -16,6 +17,7 @@ extern NSString * const VLMMenuKindContext;
 extern NSString * const VLMIncomingNotificationName;
 
 NSDictionary<NSString *, id> *VLMReadPrefsDictionary(void);
+void VLMSetDebugLoggingEnabled(BOOL enabled);
 void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp);
 void VLMReplacePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp);
 void VLMStartPrefsWriterIfNeeded(void);
@@ -25,6 +27,8 @@ BOOL VLMWriteIncomingSnapshot(NSDictionary<NSString *, id> *changes);
 void VLMMigrateToGlobalRulesIfNeeded(void);
 
 NSDictionary *_Nullable VLMGlobalRuleForKind(NSString *_Nullable kind);
+NSDictionary *VLMGlobalRuleForKindInPrefs(NSDictionary<NSString *, id> *_Nullable prefs,
+                                          NSString *_Nullable kind);
 NSArray<NSDictionary *> *VLMGlobalRuleItems(NSString *_Nullable kind);
 NSArray<NSString *> *VLMGlobalOrderIDs(NSString *_Nullable kind);
 NSArray<NSString *> *VLMGlobalHiddenIDs(NSString *_Nullable kind);
