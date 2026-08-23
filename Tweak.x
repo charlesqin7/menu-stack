@@ -103,6 +103,7 @@ static const void *kVLMLoggedLayoutKey = &kVLMLoggedLayoutKey;
 static const void *kVLMGrowDownKey = &kVLMGrowDownKey;
 static const void *kVLMFallbackIconKey = &kVLMFallbackIconKey;
 static const void *kVLMTitleSlotKey = &kVLMTitleSlotKey;
+static const void *kVLMCoverKey = &kVLMCoverKey;
 static const void *kVLMTitleOverlayActiveKey = &kVLMTitleOverlayActiveKey;
 static const void *kVLMCustomArrowKey = &kVLMCustomArrowKey;
 static const void *kVLMContainerGuardKey = &kVLMContainerGuardKey;
@@ -1069,6 +1070,27 @@ static UIImageView *VLMEnsureFallbackSlot(UIView *content) {
     return slot;
 }
 
+static UIView *VLMEnsureCover(UIView *content) {
+    UIView *cover = objc_getAssociatedObject(content, kVLMCoverKey);
+    if (!cover) {
+        cover = [[UIView alloc] init];
+        cover.userInteractionEnabled = NO;
+        cover.isAccessibilityElement = NO;
+        if (@available(iOS 13.0, *)) {
+            cover.backgroundColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *trait) {
+                if (trait.userInterfaceStyle == UIUserInterfaceStyleDark) {
+                    return [UIColor colorWithWhite:0.21 alpha:1.0];
+                }
+                return [UIColor colorWithWhite:1.0 alpha:1.0];
+            }];
+        } else {
+            cover.backgroundColor = [UIColor whiteColor];
+        }
+        objc_setAssociatedObject(content, kVLMCoverKey, cover, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return cover;
+}
+
 static UILabel *VLMEnsureTitleSlot(UIView *content) {
     UILabel *slot = objc_getAssociatedObject(content, kVLMTitleSlotKey);
     if (!slot) {
@@ -1211,6 +1233,7 @@ static void VLMRelayoutCell(UIView *cell) {
 
     UIImageView *slot = VLMEnsureFallbackSlot(content);
     UILabel *titleSlot = VLMEnsureTitleSlot(content);
+    UIView *cover = VLMEnsureCover(content);
 
     NSMutableArray<UILabel *> *labels = [NSMutableArray array];
     NSMutableArray<UIImageView *> *images = [NSMutableArray array];
@@ -1237,7 +1260,6 @@ static void VLMRelayoutCell(UIView *cell) {
         if (!VLMImageIsUsableIcon(iconImage) && VLMImageIsUsableIcon(buttonImage)) {
             iconImage = buttonImage;
         }
-        VLMStripButtonOnce(button);
     }
     NSString *storedTitle = objc_getAssociatedObject(content, kVLMCapturedTitleKey);
     UIImage *storedImage = objc_getAssociatedObject(content, kVLMCapturedImageKey);
@@ -1283,14 +1305,21 @@ static void VLMRelayoutCell(UIView *cell) {
     CGRect titleRect = CGRectMake(textX, 0, MAX(40.0, content.bounds.size.width - textX - 14.0), content.bounds.size.height);
 
     objc_setAssociatedObject(cell, kVLMTitleOverlayActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    VLMFadeNativeLabels(cell, slot, titleSlot);
 
+    if (cover.superview != cell) {
+        [cell addSubview:cover];
+    }
     if (slot.superview != cell) {
         [cell addSubview:slot];
     }
     if (titleSlot.superview != cell) {
         [cell addSubview:titleSlot];
     }
+
+    cover.frame = cell.bounds;
+    cover.hidden = NO;
+    cover.alpha = 1;
+    cover.layer.zPosition = 999;
 
     slot.hidden = NO;
     slot.alpha = 1;
@@ -1494,29 +1523,6 @@ static BOOL VLMIsInsideEditMenu(id view) {
     objc_setAssociatedObject(content, kVLMCapturedFontKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(content, kVLMCapturedColorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(self, kVLMTitleOverlayActiveKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    NSMutableArray<UILabel *> *labels = [NSMutableArray array];
-    NSMutableArray<UIImageView *> *images = [NSMutableArray array];
-    NSMutableArray<UIButton *> *buttons = [NSMutableArray array];
-    VLMWalkMenuParts(self, nil, nil, labels, images, buttons);
-    for (UIButton *button in buttons) {
-        objc_setAssociatedObject(button, kVLMStrippedButtonKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-}
-
-%end
-
-%end
-
-%group EditMenuButtons
-
-%hook UIButton
-
-- (void)layoutSubviews {
-    %orig;
-    if (!objc_getAssociatedObject(self, kVLMStrippedButtonKey)) {
-        return;
-    }
-    self.titleLabel.alpha = 0;
 }
 
 %end
@@ -1603,7 +1609,6 @@ static void VLMPrefsChanged(CFNotificationCenterRef center, void *observer, CFSt
     if (objc_getClass("_UIEditMenuListView")) {
         %init(EditMenuList);
         %init(EditMenuCells);
-        %init(EditMenuButtons);
         %init(EditMenuCollectionView);
         hookedList = YES;
     }
