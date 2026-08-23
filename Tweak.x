@@ -245,10 +245,13 @@ static void VLMWritePrefValue(NSString *key, id value) {
         @"/var/mobile/Library/Preferences/com.qins.verticalmenu.plist",
     ];
     for (NSString *path in paths) {
+        BOOL exists = [[NSFileManager defaultManager] fileExistsAtPath:path];
         NSMutableDictionary *dict = [[NSDictionary dictionaryWithContentsOfFile:path] mutableCopy];
         if (!dict) {
-            if (![[NSFileManager defaultManager] fileExistsAtPath:path] &&
-                ![[NSFileManager defaultManager] isWritableFileAtPath:[path stringByDeletingLastPathComponent]]) {
+            if (exists) {
+                continue;
+            }
+            if (![[NSFileManager defaultManager] isWritableFileAtPath:[path stringByDeletingLastPathComponent]]) {
                 continue;
             }
             dict = [NSMutableDictionary dictionary];

@@ -86,10 +86,12 @@ static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadP
     [self.tableView reloadData];
 }
 
-- (void)writeOrder {
+- (void)writeOrderAndEnableCustomSort:(BOOL)enableCustomSort {
     CFStringRef ident = (__bridge CFStringRef)kVLMPrefsID;
     CFPreferencesSetAppValue((__bridge CFStringRef)VLMMenuOrderKey, (__bridge CFArrayRef)_order, ident);
-    CFPreferencesSetAppValue((__bridge CFStringRef)VLMCustomOrderKey, kCFBooleanTrue, ident);
+    if (enableCustomSort) {
+        CFPreferencesSetAppValue((__bridge CFStringRef)VLMCustomOrderKey, kCFBooleanTrue, ident);
+    }
     CFPreferencesAppSynchronize(ident);
     CFNotificationCenterPostNotification(
         CFNotificationCenterGetDarwinNotifyCenter(),
@@ -102,7 +104,7 @@ static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadP
 
 - (void)resetOrder {
     _order = [VLMDefaultOrderIDs() mutableCopy];
-    [self writeOrder];
+    [self writeOrderAndEnableCustomSort:NO];
     [self.tableView reloadData];
 }
 
@@ -149,7 +151,7 @@ static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadP
     NSString *itemID = _order[sourceIndexPath.row];
     [_order removeObjectAtIndex:sourceIndexPath.row];
     [_order insertObject:itemID atIndex:destinationIndexPath.row];
-    [self writeOrder];
+    [self writeOrderAndEnableCustomSort:YES];
 }
 
 @end
