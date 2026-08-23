@@ -195,6 +195,9 @@ NSArray *VLMRulesApplyToItems(NSArray *items,
     if (items.count == 0) {
         return items ?: @[];
     }
+    if (!isHidden && (!customOrder || orderIDs.count == 0 || !itemID)) {
+        return items;
+    }
     NSMutableArray *visible = [NSMutableArray arrayWithCapacity:items.count];
     for (id item in items) {
         if (isHidden && isHidden(item)) {

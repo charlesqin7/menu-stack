@@ -2,6 +2,7 @@
 
 #import "VLMMenuOrder.h"
 #import "VLMMenuRules.h"
+#import "VLMMenuGeometry.h"
 
 static NSUInteger gFailures = 0;
 
@@ -165,6 +166,8 @@ static void TestJunkFiltering(void) {
 
 static void TestSafeFilteringAndSorting(void) {
     NSArray *original = @[@"copy", @"paste"];
+    NSArray *noOp = VLMRulesApplyToItems(original, nil, @[], NO, nil);
+    VLMAssert(noOp == original, @"returns the original array for an inactive rule");
     NSArray *allHidden = VLMRulesApplyToItems(original,
                                               ^BOOL(id item) {
         (void)item;
@@ -190,6 +193,39 @@ static void TestSafeFilteringAndSorting(void) {
     VLMAssertEqual(rewritten, (@[@"paste", @"copy"]), @"filters and sorts visible items");
 }
 
+static void TestSafeAreaPlacement(void) {
+    CGRect safe = CGRectMake(8.0, 55.0, 374.0, 673.0);
+    CGSize desired = CGSizeMake(250.0, 252.0);
+
+    VLMMenuPlacement nearTop = VLMMenuPlaceNearAnchor(safe,
+                                                       CGRectMake(170.0, 70.0, 40.0, 22.0),
+                                                       desired,
+                                                       6.0,
+                                                       3.0,
+                                                       76.0);
+    VLMAssert(nearTop.belowAnchor, @"places a top selection below the anchor");
+    VLMAssert(CGRectContainsRect(safe, nearTop.frame), @"keeps the top placement inside the safe rect");
+
+    VLMMenuPlacement nearBottom = VLMMenuPlaceNearAnchor(safe,
+                                                          CGRectMake(170.0, 680.0, 40.0, 22.0),
+                                                          desired,
+                                                          6.0,
+                                                          3.0,
+                                                          76.0);
+    VLMAssert(!nearBottom.belowAnchor, @"places a bottom selection above the anchor");
+    VLMAssert(CGRectContainsRect(safe, nearBottom.frame), @"keeps the bottom placement inside the safe rect");
+
+    CGRect keyboardSafe = CGRectMake(8.0, 55.0, 374.0, 250.0);
+    VLMMenuPlacement constrained = VLMMenuPlaceNearAnchor(keyboardSafe,
+                                                           CGRectMake(170.0, 170.0, 40.0, 22.0),
+                                                           desired,
+                                                           6.0,
+                                                           3.0,
+                                                           76.0);
+    VLMAssert(CGRectContainsRect(keyboardSafe, constrained.frame), @"shrinks a keyboard-constrained menu inside the safe rect");
+    VLMAssert(CGRectGetHeight(constrained.frame) < desired.height, @"reduces viewport height instead of overflowing");
+}
+
 int main(void) {
     @autoreleasepool {
         TestCatalogMatching();
@@ -200,6 +236,7 @@ int main(void) {
         TestMigration();
         TestJunkFiltering();
         TestSafeFilteringAndSorting();
+        TestSafeAreaPlacement();
         if (gFailures > 0) {
             NSLog(@"%lu VerticalMenu rule test(s) failed", (unsigned long)gFailures);
             return 1;

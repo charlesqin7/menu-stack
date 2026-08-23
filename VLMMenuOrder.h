@@ -20,11 +20,14 @@ NSDictionary<NSString *, id> *VLMReadPrefsDictionary(void);
 void VLMSetDebugLoggingEnabled(BOOL enabled);
 void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp);
 void VLMReplacePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp);
+void VLMWritePrefsValuesAsync(NSDictionary<NSString *, id> *updates, BOOL bumpStamp);
+void VLMReplacePrefsValuesAsync(NSDictionary<NSString *, id> *updates, BOOL bumpStamp);
 void VLMStartPrefsWriterIfNeeded(void);
 void VLMStartIncomingObserverIfNeeded(void);
 void VLMIngestIncomingPrefs(void);
 BOOL VLMWriteIncomingSnapshot(NSDictionary<NSString *, id> *changes);
 void VLMMigrateToGlobalRulesIfNeeded(void);
+void VLMMigrateToGlobalRulesIfNeededAsync(void);
 
 NSDictionary *_Nullable VLMGlobalRuleForKind(NSString *_Nullable kind);
 NSDictionary *VLMGlobalRuleForKindInPrefs(NSDictionary<NSString *, id> *_Nullable prefs,
@@ -41,6 +44,11 @@ void VLMWriteGlobalRule(NSString *_Nullable kind,
                         NSArray<NSString *> *_Nullable hidden,
                         NSArray<NSDictionary *> *_Nullable items,
                         BOOL customOrder);
+void VLMWriteGlobalRuleAsync(NSString *_Nullable kind,
+                             NSArray<NSString *> *_Nullable order,
+                             NSArray<NSString *> *_Nullable hidden,
+                             NSArray<NSDictionary *> *_Nullable items,
+                             BOOL customOrder);
 
 NSArray<NSDictionary *> *VLMCatalogItems(void);
 NSArray<NSString *> *VLMCoreOrderIDs(void);

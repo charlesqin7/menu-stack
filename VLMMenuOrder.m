@@ -49,6 +49,7 @@ static BOOL gDebugLoggingEnabled = NO;
 
 static void VLMTryUnsandbox(void);
 static dispatch_queue_t VLMBackgroundIngestQueue(void);
+static dispatch_queue_t VLMPrefsWriteQueue(void);
 
 static BOOL VLMIsSpringBoardProcess(void) {
     NSString *bundle = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
@@ -130,146 +131,11 @@ static NSArray<NSString *> *VLMIncomingPlistPaths(void) {
     for (const char **pattern = sharedPatterns; *pattern; pattern++) {
         VLMAddGlobMatches(paths, *pattern);
     }
-    if (!VLMIsSpringBoardProcess()) {
-        return paths;
-    }
-    static const char *containerPatterns[] = {
-        "/var/mobile/Containers/Data/Application/*/tmp/com.qins.verticalmenu.incoming.plist",
-        "/var/mobile/Containers/Data/Application/*/tmp/VerticalMenu-incoming.plist",
-        "/private/var/mobile/Containers/Data/Application/*/tmp/com.qins.verticalmenu.incoming.plist",
-        "/private/var/mobile/Containers/Data/Application/*/tmp/VerticalMenu-incoming.plist",
-        "/var/mobile/Containers/Data/Application/*/Library/Caches/tmp/com.qins.verticalmenu.incoming.plist",
-        "/var/mobile/Containers/Data/Application/*/Library/Caches/tmp/VerticalMenu-incoming.plist",
-        "/private/var/mobile/Containers/Data/Application/*/Library/Caches/tmp/com.qins.verticalmenu.incoming.plist",
-        "/private/var/mobile/Containers/Data/Application/*/Library/Caches/tmp/VerticalMenu-incoming.plist",
-        "/var/mobile/Containers/Data/Application/*/Library/Caches/TemporaryItems/com.qins.verticalmenu.incoming.plist",
-        "/var/mobile/Containers/Data/Application/*/Library/Caches/TemporaryItems/VerticalMenu-incoming.plist",
-        "/var/mobile/Containers/Data/Application/*/Library/Preferences/com.qins.verticalmenu.incoming.plist",
-        "/var/mobile/Containers/Data/Application/*/Documents/VerticalMenu-incoming.plist",
-        "/private/var/mobile/Containers/Data/Application/*/Documents/VerticalMenu-incoming.plist",
-        NULL,
-    };
-    for (const char **pattern = containerPatterns; *pattern; pattern++) {
-        VLMAddGlobMatches(paths, *pattern);
-    }
-    return paths;
-}
-
-static NSArray<NSString *> *VLMIncomingRelativeNames(void) {
-    return @[
-        @"tmp/com.qins.verticalmenu.incoming.plist",
-        @"tmp/VerticalMenu-incoming.plist",
-        @"Library/Caches/tmp/com.qins.verticalmenu.incoming.plist",
-        @"Library/Caches/tmp/VerticalMenu-incoming.plist",
-        @"Library/Caches/TemporaryItems/com.qins.verticalmenu.incoming.plist",
-        @"Library/Caches/TemporaryItems/VerticalMenu-incoming.plist",
-        @"Library/Preferences/com.qins.verticalmenu.incoming.plist",
-        @"Library/Preferences/VerticalMenu-incoming.plist",
-        @"Documents/VerticalMenu-incoming.plist",
-        @"Documents/com.qins.verticalmenu.incoming.plist",
-    ];
-}
-
-static NSArray<NSString *> *VLMAppDataContainerRoots(void) {
-    VLMTryUnsandbox();
-    NSMutableArray<NSString *> *roots = [NSMutableArray array];
-    void (^addRoot)(NSString *) = ^(NSString *path) {
-        if (path.length > 0 && ![roots containsObject:path]) {
-            [roots addObject:path];
-        }
-    };
-    Class workspaceClass = objc_getClass("LSApplicationWorkspace");
-    if (workspaceClass) {
-        SEL defaultSel = sel_registerName("defaultWorkspace");
-        SEL allSel = sel_registerName("allApplications");
-        SEL dataSel = sel_registerName("dataContainerURL");
-        if ([workspaceClass respondsToSelector:defaultSel]) {
-            id workspace = ((id (*)(id, SEL))objc_msgSend)(workspaceClass, defaultSel);
-            if (workspace && [workspace respondsToSelector:allSel]) {
-                NSArray *apps = ((id (*)(id, SEL))objc_msgSend)(workspace, allSel);
-                if ([apps isKindOfClass:[NSArray class]]) {
-                    for (id proxy in apps) {
-                        if (![proxy respondsToSelector:dataSel]) {
-                            continue;
-                        }
-                        NSURL *url = ((id (*)(id, SEL))objc_msgSend)(proxy, dataSel);
-                        if ([url isKindOfClass:[NSURL class]]) {
-                            addRoot(url.path);
-                        }
-                    }
-                }
-            }
-        }
-        SEL proxySel = sel_registerName("applicationProxyForIdentifier:");
-        Class proxyClass = objc_getClass("LSApplicationProxy");
-        if (proxyClass && [proxyClass respondsToSelector:proxySel]) {
-            id xProxy = ((id (*)(id, SEL, id))objc_msgSend)(proxyClass, proxySel, @"com.atebits.Tweetie2");
-            SEL dataSel = sel_registerName("dataContainerURL");
-            if (xProxy && [xProxy respondsToSelector:dataSel]) {
-                NSURL *url = ((id (*)(id, SEL))objc_msgSend)(xProxy, dataSel);
-                if ([url isKindOfClass:[NSURL class]]) {
-                    addRoot(url.path);
-                }
-            }
-        }
-    }
-    NSFileManager *fm = [NSFileManager defaultManager];
-    for (NSString *base in @[
-        @"/var/mobile/Containers/Data/Application",
-        @"/private/var/mobile/Containers/Data/Application",
-    ]) {
-        NSArray<NSString *> *names = [fm contentsOfDirectoryAtPath:base error:nil];
-        for (NSString *uuid in names) {
-            NSString *path = [base stringByAppendingPathComponent:uuid];
-            BOOL isDirectory = NO;
-            if ([fm fileExistsAtPath:path isDirectory:&isDirectory] && isDirectory) {
-                addRoot(path);
-            }
-        }
-    }
-    return roots;
-}
-
-static NSArray<NSString *> *VLMIncomingPlistsInAppContainers(void) {
-    if (!VLMIsSpringBoardProcess()) {
-        return @[];
-    }
-    VLMTryUnsandbox();
-    NSMutableArray<NSString *> *paths = [NSMutableArray array];
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSArray<NSString *> *relatives = VLMIncomingRelativeNames();
-    for (NSString *root in VLMAppDataContainerRoots()) {
-        for (NSString *relative in relatives) {
-            NSString *path = [root stringByAppendingPathComponent:relative];
-            if ([fm fileExistsAtPath:path] && ![paths containsObject:path]) {
-                [paths addObject:path];
-            }
-        }
-        for (NSString *dumpRel in @[@"tmp/VerticalMenu-menu.txt", @"Library/Caches/tmp/VerticalMenu-menu.txt"]) {
-            NSString *dumpPath = [root stringByAppendingPathComponent:dumpRel];
-            if (![fm fileExistsAtPath:dumpPath]) {
-                continue;
-            }
-            NSString *directory = [dumpPath stringByDeletingLastPathComponent];
-            for (NSString *name in @[@"VerticalMenu-incoming.plist", @"com.qins.verticalmenu.incoming.plist"]) {
-                NSString *incoming = [directory stringByAppendingPathComponent:name];
-                if ([fm fileExistsAtPath:incoming] && ![paths containsObject:incoming]) {
-                    [paths addObject:incoming];
-                }
-            }
-        }
-    }
     return paths;
 }
 
 static NSArray<NSString *> *VLMIncomingPlistPathsForIngest(void) {
-    NSMutableArray<NSString *> *paths = [VLMIncomingPlistPaths() mutableCopy] ?: [NSMutableArray array];
-    for (NSString *path in VLMIncomingPlistsInAppContainers()) {
-        if (![paths containsObject:path]) {
-            [paths addObject:path];
-        }
-    }
-    return paths;
+    return VLMIncomingPlistPaths();
 }
 
 static NSArray<NSString *> *VLMPrefsFilePaths(void) {
@@ -301,7 +167,6 @@ void VLMSetDebugLoggingEnabled(BOOL enabled) {
 
 static NSDictionary *VLMCopyCFPrefs(CFStringRef host) {
     CFStringRef ident = (__bridge CFStringRef)VLMPrefsIdentifier;
-    CFPreferencesAppSynchronize(ident);
     CFArrayRef keys = CFPreferencesCopyKeyList(ident, kCFPreferencesCurrentUser, host);
     if (!keys) {
         return @{};
@@ -309,21 +174,6 @@ static NSDictionary *VLMCopyCFPrefs(CFStringRef host) {
     CFDictionaryRef cfDict = CFPreferencesCopyMultiple(keys, ident, kCFPreferencesCurrentUser, host);
     CFRelease(keys);
     return CFBridgingRelease(cfDict) ?: @{};
-}
-
-static id VLMCopyCFPrefValue(NSString *key) {
-    CFStringRef ident = (__bridge CFStringRef)VLMPrefsIdentifier;
-    CFStringRef cfKey = (__bridge CFStringRef)key;
-    CFPreferencesAppSynchronize(ident);
-    id appValue = CFBridgingRelease(CFPreferencesCopyAppValue(cfKey, ident));
-    if (appValue) {
-        return appValue;
-    }
-    id anyHost = CFBridgingRelease(CFPreferencesCopyValue(cfKey, ident, kCFPreferencesCurrentUser, kCFPreferencesAnyHost));
-    if (anyHost) {
-        return anyHost;
-    }
-    return CFBridgingRelease(CFPreferencesCopyValue(cfKey, ident, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost));
 }
 
 static NSArray<NSDictionary *> *VLMPrefsSources(void) {
@@ -337,12 +187,6 @@ static NSArray<NSDictionary *> *VLMPrefsSources(void) {
         [sources addObject:currentHost];
     }
     for (NSString *path in VLMPrefsFilePaths()) {
-        NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
-        if (dict.count > 0) {
-            [sources addObject:dict];
-        }
-    }
-    for (NSString *path in VLMIncomingPlistPaths()) {
         NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
         if (dict.count > 0) {
             [sources addObject:dict];
@@ -365,10 +209,7 @@ static id VLMPickPrefValue(NSArray<NSDictionary *> *sources, NSString *key) {
             chosenStamp = stamp;
         }
     }
-    if (chosen) {
-        return chosen;
-    }
-    return VLMCopyCFPrefValue(key);
+    return chosen;
 }
 
 static NSArray<NSDictionary *> *VLMMergedProfilesFromSources(NSArray<NSDictionary *> *sources) {
@@ -384,16 +225,31 @@ static NSArray<NSDictionary *> *VLMMergedProfilesFromSources(NSArray<NSDictionar
         }
         return NSOrderedSame;
     }];
-    NSArray *merged = @[];
+    NSMutableDictionary<NSString *, NSDictionary *> *profilesByID = [NSMutableDictionary dictionary];
     for (NSDictionary *dict in ordered) {
         for (NSDictionary *profile in VLMSanitizeProfiles(dict[VLMMenuProfilesKey])) {
-            merged = VLMUpsertProfile(merged, profile);
+            NSString *profileID = profile[@"id"];
+            if (profileID.length > 0) {
+                profilesByID[profileID] = profile;
+            }
         }
     }
-    return merged;
+    return VLMSanitizeProfiles(profilesByID.allValues);
+}
+
+static NSArray<NSDictionary *> *VLMProfilesByReplacingProfiles(NSArray *base, NSArray *updates) {
+    NSMutableDictionary<NSString *, NSDictionary *> *profilesByID = [NSMutableDictionary dictionary];
+    for (NSDictionary *profile in VLMSanitizeProfiles(base)) {
+        profilesByID[profile[@"id"]] = profile;
+    }
+    for (NSDictionary *profile in VLMSanitizeProfiles(updates)) {
+        profilesByID[profile[@"id"]] = profile;
+    }
+    return VLMSanitizeProfiles(profilesByID.allValues);
 }
 
 NSDictionary<NSString *, id> *VLMReadPrefsDictionary(void) {
+    CFPreferencesAppSynchronize((__bridge CFStringRef)VLMPrefsIdentifier);
     NSArray<NSDictionary *> *sources = VLMPrefsSources();
     NSMutableSet<NSString *> *keys = [NSMutableSet set];
     for (NSDictionary *dict in sources) {
@@ -746,6 +602,15 @@ static dispatch_queue_t VLMBackgroundIngestQueue(void) {
     return queue;
 }
 
+static dispatch_queue_t VLMPrefsWriteQueue(void) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        queue = dispatch_queue_create("com.qins.verticalmenu.prefs-writer", DISPATCH_QUEUE_SERIAL);
+    });
+    return queue;
+}
+
 static void VLMIngestIncomingPrefsNow(void) {
     if (gApplyingRemotePrefs) {
         return;
@@ -822,20 +687,46 @@ void VLMReplacePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp
     gReplaceProfiles = NO;
 }
 
+void VLMWritePrefsValuesAsync(NSDictionary<NSString *, id> *updates, BOOL bumpStamp) {
+    NSDictionary *snapshot = [updates copy] ?: @{};
+    dispatch_async(VLMPrefsWriteQueue(), ^{
+        VLMWritePrefsValues(snapshot, bumpStamp);
+    });
+}
+
+void VLMReplacePrefsValuesAsync(NSDictionary<NSString *, id> *updates, BOOL bumpStamp) {
+    NSDictionary *snapshot = [updates copy] ?: @{};
+    dispatch_async(VLMPrefsWriteQueue(), ^{
+        VLMReplacePrefsValues(snapshot, bumpStamp);
+    });
+}
+
 void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp) {
     if (updates.count == 0 && !bumpStamp) {
         return;
     }
     NSMutableDictionary<NSString *, id> *changes = [updates mutableCopy] ?: [NSMutableDictionary dictionary];
-    if (changes[VLMMenuProfilesKey] && !gReplaceProfiles) {
-        NSArray *merged = VLMDiskOnlyProfiles();
-        for (NSDictionary *profile in VLMSanitizeProfiles(changes[VLMMenuProfilesKey])) {
-            merged = VLMUpsertProfile(merged, profile);
-        }
-        changes[VLMMenuProfilesKey] = merged;
-    }
     if (bumpStamp) {
         changes[VLMPrefsStampKey] = @((NSTimeInterval)[[NSDate date] timeIntervalSince1970]);
+    }
+
+    BOOL runtimeClient = !gApplyingRemotePrefs && !VLMIsSpringBoardProcess() && !VLMCurrentProcessIsPreferences();
+    if (runtimeClient && VLMSendPrefsToSpringBoard(changes)) {
+        CFNotificationCenterPostNotification(
+            CFNotificationCenterGetDarwinNotifyCenter(),
+            (__bridge CFStringRef)VLMReloadNotificationName,
+            NULL,
+            NULL,
+            true
+        );
+        VLMStorageLog(@"prefs handed to SpringBoard profiles=%lu in %@",
+                      (unsigned long)[changes[VLMMenuProfilesKey] count],
+                      [[NSBundle mainBundle] bundleIdentifier] ?: @"?");
+        return;
+    }
+
+    if (changes[VLMMenuProfilesKey] && !gReplaceProfiles) {
+        changes[VLMMenuProfilesKey] = VLMProfilesByReplacingProfiles(VLMDiskOnlyProfiles(), changes[VLMMenuProfilesKey]);
     }
 
     VLMTryUnsandbox();
@@ -1508,7 +1399,7 @@ NSDictionary *VLMProfileWithID(NSArray *profiles, NSString *profileID) {
     if (profileID.length == 0) {
         return nil;
     }
-    for (NSDictionary *profile in VLMSanitizeProfiles(profiles)) {
+    for (NSDictionary *profile in profiles) {
         if ([profile[@"id"] isEqualToString:profileID]) {
             return profile;
         }
@@ -1673,6 +1564,20 @@ void VLMWriteGlobalRule(NSString *kind,
     VLMWritePrefsValues(@{VLMGlobalRulesKey: rules}, YES);
 }
 
+void VLMWriteGlobalRuleAsync(NSString *kind,
+                             NSArray<NSString *> *order,
+                             NSArray<NSString *> *hidden,
+                             NSArray<NSDictionary *> *items,
+                             BOOL customOrder) {
+    NSString *kindSnapshot = [kind copy];
+    NSArray *orderSnapshot = [order copy];
+    NSArray *hiddenSnapshot = [hidden copy];
+    NSArray *itemsSnapshot = [items copy];
+    dispatch_async(VLMPrefsWriteQueue(), ^{
+        VLMWriteGlobalRule(kindSnapshot, orderSnapshot, hiddenSnapshot, itemsSnapshot, customOrder);
+    });
+}
+
 void VLMMigrateToGlobalRulesIfNeeded(void) {
     if (!VLMIsSpringBoardProcess() && !VLMCurrentProcessIsPreferences()) {
         return;
@@ -1692,4 +1597,10 @@ void VLMMigrateToGlobalRulesIfNeeded(void) {
                                                        VLMMenuKindEdit,
                                                        VLMMenuKindContext);
     VLMWritePrefsValues(@{VLMGlobalRulesKey: next}, YES);
+}
+
+void VLMMigrateToGlobalRulesIfNeededAsync(void) {
+    dispatch_async(VLMPrefsWriteQueue(), ^{
+        VLMMigrateToGlobalRulesIfNeeded();
+    });
 }

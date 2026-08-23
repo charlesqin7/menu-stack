@@ -2,9 +2,15 @@
 #import "VLMOrderListController.h"
 #import "../VLMMenuOrder.h"
 
+@interface VLMMenuListController ()
+- (void)rebuildProfileDisplayCache;
+@end
+
 @implementation VLMMenuListController {
     UITableView *_tableView;
     NSArray<NSDictionary *> *_profiles;
+    NSArray<NSString *> *_profileTitles;
+    NSArray<NSString *> *_profileSubtitles;
 }
 
 - (instancetype)init {
@@ -40,7 +46,6 @@
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
-    VLMMigrateToGlobalRulesIfNeeded();
     [self reloadFromPrefs];
 }
 
@@ -51,11 +56,12 @@
 - (void)reloadFromPrefs {
     NSDictionary *prefs = VLMReadPrefsDictionary();
     _profiles = VLMSanitizeProfiles(prefs[VLMMenuProfilesKey]);
+    [self rebuildProfileDisplayCache];
     [_tableView reloadData];
 }
 
 - (void)writeProfiles {
-    VLMReplacePrefsValues(@{VLMMenuProfilesKey: _profiles ?: @[]}, YES);
+    VLMReplacePrefsValuesAsync(@{VLMMenuProfilesKey: _profiles ?: @[]}, YES);
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
@@ -94,9 +100,8 @@
         cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle reuseIdentifier:identifier];
         cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     }
-    NSDictionary *profile = _profiles[indexPath.row];
-    cell.textLabel.text = VLMProfileDisplayTitle(profile);
-    cell.detailTextLabel.text = VLMProfileSubtitle(profile);
+    cell.textLabel.text = _profileTitles[indexPath.row];
+    cell.detailTextLabel.text = _profileSubtitles[indexPath.row];
     cell.detailTextLabel.numberOfLines = 2;
     cell.detailTextLabel.textColor = [UIColor secondaryLabelColor];
     return cell;
@@ -130,8 +135,20 @@
     }
     NSString *profileID = _profiles[indexPath.row][@"id"];
     _profiles = VLMRemoveProfile(_profiles, profileID);
+    [self rebuildProfileDisplayCache];
     [self writeProfiles];
     [tableView reloadData];
+}
+
+- (void)rebuildProfileDisplayCache {
+    NSMutableArray<NSString *> *titles = [NSMutableArray arrayWithCapacity:_profiles.count];
+    NSMutableArray<NSString *> *subtitles = [NSMutableArray arrayWithCapacity:_profiles.count];
+    for (NSDictionary *profile in _profiles) {
+        [titles addObject:VLMProfileDisplayTitle(profile) ?: @""];
+        [subtitles addObject:VLMProfileSubtitle(profile) ?: @""];
+    }
+    _profileTitles = titles;
+    _profileSubtitles = subtitles;
 }
 
 @end
