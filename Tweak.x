@@ -634,6 +634,58 @@ static void VLMConcealStaleChrome(UIView *host) {
     }
 }
 
+static BOOL VLMNameLooksLikeBackdrop(NSString *name) {
+    return [name containsString:@"VisualEffect"]
+        || [name containsString:@"Backdrop"]
+        || [name containsString:@"Platter"]
+        || [name containsString:@"Material"]
+        || [name containsString:@"Portal"]
+        || [name containsString:@"Replicat"]
+        || [name containsString:@"Snapshot"]
+        || [name containsString:@"Background"]
+        || [name localizedCaseInsensitiveContainsString:@"shadow"]
+        || [name containsString:@"Dimming"]
+        || [name containsString:@"Cutout"];
+}
+
+static void VLMHideStrayBackdrops(UIView *host) {
+    if (!host.window) {
+        return;
+    }
+    CGRect hostInWindow = [host convertRect:host.bounds toView:host.window];
+
+    UIView *current = host.superview;
+    for (NSInteger depth = 0; current && depth < 6; depth++) {
+        if ([current isKindOfClass:[UIWindow class]]) {
+            break;
+        }
+        for (UIView *sub in [current.subviews copy]) {
+            if (sub == host
+                || [host isDescendantOfView:sub]
+                || [sub isKindOfClass:[VLMSelectionAnchorView class]]
+                || VLMNameLooksLikeArrow(sub)
+                || [sub isKindOfClass:[UICollectionView class]]) {
+                continue;
+            }
+            NSString *name = NSStringFromClass(sub.class);
+            BOOL backdropLike = [sub isKindOfClass:[UIVisualEffectView class]] || VLMNameLooksLikeBackdrop(name);
+            if (!backdropLike) {
+                continue;
+            }
+            CGRect subInWindow = [sub convertRect:sub.bounds toView:sub.window];
+            BOOL matchesHost = fabs(subInWindow.origin.x - hostInWindow.origin.x) < 3.0
+                && fabs(subInWindow.origin.y - hostInWindow.origin.y) < 3.0
+                && fabs(subInWindow.size.width - hostInWindow.size.width) < 6.0
+                && fabs(subInWindow.size.height - hostInWindow.size.height) < 6.0;
+            if (!matchesHost && !sub.hidden) {
+                VLMHideView(sub);
+                VLMLog(@"hide backdrop %@ frame=%@", name, NSStringFromCGRect(subInWindow));
+            }
+        }
+        current = current.superview;
+    }
+}
+
 static void VLMHideSystemArrowsNear(UIView *host) {
     if (objc_getAssociatedObject(host, kVLMHidSystemArrowKey)) {
         return;
@@ -816,6 +868,7 @@ static BOOL VLMPositionHostNearSelection(UIView *host, CGSize fitted) {
 
     VLMSetFrameInWindow(host, listRect);
     VLMConcealStaleChrome(host);
+    VLMHideStrayBackdrops(host);
     VLMScheduleArrow(host);
     VLMLog(@"pin selection=%@ list=%@ below=%d", NSStringFromCGRect(selection), NSStringFromCGRect(listRect), below);
     return YES;
@@ -985,6 +1038,7 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     VLMStripShadows(host);
     VLMSizeBackgroundsToHost(host);
     VLMConcealStaleChrome(host);
+    VLMHideStrayBackdrops(host);
 
     collectionView.pagingEnabled = NO;
     collectionView.scrollEnabled = YES;
@@ -1653,6 +1707,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
     UIView *list = VLMFindEditMenuList(self, 4);
     if (list) {
         VLMConcealStaleChrome(list);
+        VLMHideStrayBackdrops(list);
     }
     objc_setAssociatedObject(self, kVLMContainerGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
