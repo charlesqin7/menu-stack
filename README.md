@@ -131,6 +131,12 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
 
+## 更新（1.0.44）
+
+- 超出安全区：新日志里菜单在 `alpha=0` 时就落位，键盘已经弹出却没算进去（底边压到键盘），靠近顶部时 `y=65` 箭头会进岛。改为每次按真实键盘窗口 / `UIInputSetHostView` 钳位，并给箭头和状态栏留空；菜单真正显示出来后再落一次位。
+- 右边灰条：给毛玻璃加 `maskView` 会把它收成 `0×0`，系统原来的 347pt backdrop 仍会画出来。改为关掉 `UIVisualEffectView.effect`、藏起 `_UIVisualEffectBackdropView` 和翻页按钮，不再给全屏容器做 mask。
+- 设置里没有 X：和层级日志用同一种 `writeToFile:` 把 XML 写到沙盒 tmp/Documents；SpringBoard 先 unsandbox，再按容器目录和 `LSApplicationProxy` 去找这份文件，容器里的副本不再删掉。
+
 ## 更新（1.0.43）
 
 - 弹出菜单后卡死：1.0.42 在滚动/布局时强制改毛玻璃和翻页按钮的 frame，和系统布局互相顶，形成死循环。改为只在毛玻璃自己上面做圆角遮罩，滚动结束再修一次，并且菜单记录推迟到下一拍再写，不再在布局里做跨进程通信。

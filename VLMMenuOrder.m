@@ -37,6 +37,8 @@ static BOOL gApplyingRemotePrefs = NO;
 static BOOL gReplaceProfiles = NO;
 static BOOL gUnsandboxed = NO;
 
+static void VLMTryUnsandbox(void);
+
 static BOOL VLMIsSpringBoardProcess(void) {
     NSString *bundle = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
     return [bundle isEqualToString:@"com.apple.springboard"];
@@ -56,6 +58,8 @@ static NSArray<NSString *> *VLMIncomingDirectories(void) {
     };
     add(NSTemporaryDirectory());
     add([NSHomeDirectory() stringByAppendingPathComponent:@"tmp"]);
+    add([NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]);
+    add([NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches/tmp"]);
     add([NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences"]);
     add(@"/var/tmp");
     add(@"/tmp");
@@ -121,7 +125,8 @@ static NSArray<NSString *> *VLMIncomingPlistPaths(void) {
         "/var/mobile/Containers/Data/Application/*/Library/Caches/TemporaryItems/com.qins.verticalmenu.incoming.plist",
         "/var/mobile/Containers/Data/Application/*/Library/Caches/TemporaryItems/VerticalMenu-incoming.plist",
         "/var/mobile/Containers/Data/Application/*/Library/Preferences/com.qins.verticalmenu.incoming.plist",
-        "/private/var/mobile/Containers/Data/Application/*/Library/Preferences/com.qins.verticalmenu.incoming.plist",
+        "/var/mobile/Containers/Data/Application/*/Documents/VerticalMenu-incoming.plist",
+        "/private/var/mobile/Containers/Data/Application/*/Documents/VerticalMenu-incoming.plist",
         NULL,
     };
     for (const char **pattern = patterns; *pattern; pattern++) {
@@ -140,48 +145,76 @@ static NSArray<NSString *> *VLMIncomingRelativeNames(void) {
         @"Library/Caches/TemporaryItems/VerticalMenu-incoming.plist",
         @"Library/Preferences/com.qins.verticalmenu.incoming.plist",
         @"Library/Preferences/VerticalMenu-incoming.plist",
+        @"Documents/VerticalMenu-incoming.plist",
+        @"Documents/com.qins.verticalmenu.incoming.plist",
     ];
 }
 
 static NSArray<NSString *> *VLMAppDataContainerRoots(void) {
+    VLMTryUnsandbox();
     NSMutableArray<NSString *> *roots = [NSMutableArray array];
+    void (^addRoot)(NSString *) = ^(NSString *path) {
+        if (path.length > 0 && ![roots containsObject:path]) {
+            [roots addObject:path];
+        }
+    };
     Class workspaceClass = objc_getClass("LSApplicationWorkspace");
-    if (!workspaceClass) {
-        return roots;
-    }
-    SEL defaultSel = sel_registerName("defaultWorkspace");
-    SEL allSel = sel_registerName("allApplications");
-    SEL dataSel = sel_registerName("dataContainerURL");
-    if (![workspaceClass respondsToSelector:defaultSel]) {
-        return roots;
-    }
-    id workspace = ((id (*)(id, SEL))objc_msgSend)(workspaceClass, defaultSel);
-    if (!workspace || ![workspace respondsToSelector:allSel]) {
-        return roots;
-    }
-    NSArray *apps = ((id (*)(id, SEL))objc_msgSend)(workspace, allSel);
-    if (![apps isKindOfClass:[NSArray class]]) {
-        return roots;
-    }
-    for (id proxy in apps) {
-        if (![proxy respondsToSelector:dataSel]) {
-            continue;
+    if (workspaceClass) {
+        SEL defaultSel = sel_registerName("defaultWorkspace");
+        SEL allSel = sel_registerName("allApplications");
+        SEL dataSel = sel_registerName("dataContainerURL");
+        if ([workspaceClass respondsToSelector:defaultSel]) {
+            id workspace = ((id (*)(id, SEL))objc_msgSend)(workspaceClass, defaultSel);
+            if (workspace && [workspace respondsToSelector:allSel]) {
+                NSArray *apps = ((id (*)(id, SEL))objc_msgSend)(workspace, allSel);
+                if ([apps isKindOfClass:[NSArray class]]) {
+                    for (id proxy in apps) {
+                        if (![proxy respondsToSelector:dataSel]) {
+                            continue;
+                        }
+                        NSURL *url = ((id (*)(id, SEL))objc_msgSend)(proxy, dataSel);
+                        if ([url isKindOfClass:[NSURL class]]) {
+                            addRoot(url.path);
+                        }
+                    }
+                }
+            }
         }
-        NSURL *url = ((id (*)(id, SEL))objc_msgSend)(proxy, dataSel);
-        if (![url isKindOfClass:[NSURL class]] || url.path.length == 0) {
-            continue;
+        SEL proxySel = sel_registerName("applicationProxyForIdentifier:");
+        Class proxyClass = objc_getClass("LSApplicationProxy");
+        if (proxyClass && [proxyClass respondsToSelector:proxySel]) {
+            id xProxy = ((id (*)(id, SEL, id))objc_msgSend)(proxyClass, proxySel, @"com.atebits.Tweetie2");
+            SEL dataSel = sel_registerName("dataContainerURL");
+            if (xProxy && [xProxy respondsToSelector:dataSel]) {
+                NSURL *url = ((id (*)(id, SEL))objc_msgSend)(xProxy, dataSel);
+                if ([url isKindOfClass:[NSURL class]]) {
+                    addRoot(url.path);
+                }
+            }
         }
-        if (![roots containsObject:url.path]) {
-            [roots addObject:url.path];
+    }
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *base in @[
+        @"/var/mobile/Containers/Data/Application",
+        @"/private/var/mobile/Containers/Data/Application",
+    ]) {
+        NSArray<NSString *> *names = [fm contentsOfDirectoryAtPath:base error:nil];
+        for (NSString *uuid in names) {
+            NSString *path = [base stringByAppendingPathComponent:uuid];
+            BOOL isDirectory = NO;
+            if ([fm fileExistsAtPath:path isDirectory:&isDirectory] && isDirectory) {
+                addRoot(path);
+            }
         }
     }
     return roots;
 }
 
 static NSArray<NSString *> *VLMIncomingPlistsInAppContainers(void) {
-    if (!VLMIsSpringBoardProcess()) {
+    if (!VLMIsSpringBoardProcess() && !VLMCurrentProcessIsPreferences()) {
         return @[];
     }
+    VLMTryUnsandbox();
     NSMutableArray<NSString *> *paths = [NSMutableArray array];
     NSFileManager *fm = [NSFileManager defaultManager];
     NSArray<NSString *> *relatives = VLMIncomingRelativeNames();
@@ -190,6 +223,19 @@ static NSArray<NSString *> *VLMIncomingPlistsInAppContainers(void) {
             NSString *path = [root stringByAppendingPathComponent:relative];
             if ([fm fileExistsAtPath:path] && ![paths containsObject:path]) {
                 [paths addObject:path];
+            }
+        }
+        for (NSString *dumpRel in @[@"tmp/VerticalMenu-menu.txt", @"Library/Caches/tmp/VerticalMenu-menu.txt"]) {
+            NSString *dumpPath = [root stringByAppendingPathComponent:dumpRel];
+            if (![fm fileExistsAtPath:dumpPath]) {
+                continue;
+            }
+            NSString *directory = [dumpPath stringByDeletingLastPathComponent];
+            for (NSString *name in @[@"VerticalMenu-incoming.plist", @"com.qins.verticalmenu.incoming.plist"]) {
+                NSString *incoming = [directory stringByAppendingPathComponent:name];
+                if ([fm fileExistsAtPath:incoming] && ![paths containsObject:incoming]) {
+                    [paths addObject:incoming];
+                }
             }
         }
     }
@@ -497,6 +543,7 @@ void VLMStartPrefsWriterIfNeeded(void) {
     }
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        VLMTryUnsandbox();
         Boolean shouldFree = false;
         CFMessagePortRef port = CFMessagePortCreateLocal(kCFAllocatorDefault,
                                                          CFSTR("com.qins.verticalmenu.prefsport"),
@@ -547,10 +594,18 @@ static BOOL VLMWriteIncomingData(NSData *data, NSString *directory) {
             NSFilePosixPermissions: @0777
         } error:nil];
     }
+    NSString *xml = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
     BOOL wrote = NO;
     for (NSString *name in @[@"com.qins.verticalmenu.incoming.plist", @"VerticalMenu-incoming.plist"]) {
         NSString *path = [directory stringByAppendingPathComponent:name];
-        if ([data writeToFile:path atomically:YES]) {
+        BOOL ok = NO;
+        if (xml.length > 0) {
+            ok = [xml writeToFile:path atomically:YES encoding:NSUTF8StringEncoding error:NULL];
+        }
+        if (!ok) {
+            ok = [data writeToFile:path atomically:YES];
+        }
+        if (ok) {
             chmod(path.fileSystemRepresentation, 0666);
             wrote = YES;
         }
@@ -558,13 +613,33 @@ static BOOL VLMWriteIncomingData(NSData *data, NSString *directory) {
     return wrote;
 }
 
+BOOL VLMWriteIncomingSnapshot(NSDictionary<NSString *, id> *changes) {
+    if (changes.count == 0) {
+        return NO;
+    }
+    VLMTryUnsandbox();
+    NSError *error = nil;
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:changes
+                                                              format:NSPropertyListXMLFormat_v1_0
+                                                             options:0
+                                                               error:&error];
+    if (!data) {
+        return NO;
+    }
+    BOOL wrote = VLMWriteIncomingData(data, NSTemporaryDirectory());
+    wrote = VLMWriteIncomingData(data, [NSHomeDirectory() stringByAppendingPathComponent:@"tmp"]) || wrote;
+    wrote = VLMWriteIncomingData(data, [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]) || wrote;
+    return wrote;
+}
+
 static BOOL VLMDropIncomingPrefs(NSDictionary<NSString *, id> *changes) {
     if (gApplyingRemotePrefs || changes.count == 0) {
         return NO;
     }
+    VLMTryUnsandbox();
     NSError *error = nil;
     NSData *data = [NSPropertyListSerialization dataWithPropertyList:changes
-                                                              format:NSPropertyListBinaryFormat_v1_0
+                                                              format:NSPropertyListXMLFormat_v1_0
                                                              options:0
                                                                error:&error];
     if (!data) {
@@ -576,6 +651,7 @@ static BOOL VLMDropIncomingPrefs(NSDictionary<NSString *, id> *changes) {
     sandboxWrote = VLMWriteIncomingData(data, [NSHomeDirectory() stringByAppendingPathComponent:@"tmp"]) || sandboxWrote;
     sandboxWrote = VLMWriteIncomingData(data, [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches/tmp"]) || sandboxWrote;
     sandboxWrote = VLMWriteIncomingData(data, [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences"]) || sandboxWrote;
+    sandboxWrote = VLMWriteIncomingData(data, [NSHomeDirectory() stringByAppendingPathComponent:@"Documents"]) || sandboxWrote;
 
     BOOL sharedWrote = NO;
     for (NSString *directory in VLMIncomingDirectories()) {
@@ -637,18 +713,24 @@ void VLMIngestIncomingPrefs(void) {
     if (!VLMIsSpringBoardProcess() && !VLMCurrentProcessIsPreferences()) {
         return;
     }
+    VLMTryUnsandbox();
     NSArray<NSString *> *paths = VLMIncomingPlistPathsForIngest();
     if (paths.count == 0) {
         return;
     }
-    NSLog(@"[VerticalMenu] ingest paths=%lu sb=%d",
-          (unsigned long)paths.count, VLMIsSpringBoardProcess());
+    NSLog(@"[VerticalMenu] ingest paths=%lu sb=%d first=%@",
+          (unsigned long)paths.count,
+          VLMIsSpringBoardProcess(),
+          paths.firstObject);
     gApplyingRemotePrefs = YES;
     NSMutableArray<NSDictionary *> *incoming = [NSMutableArray array];
     for (NSString *path in paths) {
         NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
         if (dict.count > 0) {
             [incoming addObject:dict];
+            NSLog(@"[VerticalMenu] ingest read %@ profiles=%lu",
+                  path,
+                  (unsigned long)VLMSanitizeProfiles(dict[VLMMenuProfilesKey]).count);
         }
     }
     NSDictionary *merged = VLMReadPrefsDictionary();
@@ -664,6 +746,9 @@ void VLMIngestIncomingPrefs(void) {
     gReplaceProfiles = NO;
     if (wrote) {
         for (NSString *path in paths) {
+            if ([path containsString:@"/Containers/Data/"]) {
+                continue;
+            }
             [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
         }
     }

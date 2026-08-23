@@ -20,6 +20,7 @@ void VLMReplacePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp
 void VLMStartPrefsWriterIfNeeded(void);
 void VLMStartIncomingObserverIfNeeded(void);
 void VLMIngestIncomingPrefs(void);
+BOOL VLMWriteIncomingSnapshot(NSDictionary<NSString *, id> *changes);
 
 NSArray<NSDictionary *> *VLMCatalogItems(void);
 NSArray<NSString *> *VLMCoreOrderIDs(void);
