@@ -66,7 +66,7 @@ static NSDictionary *VLMPrefsDictionary(void) {
 
 static BOOL VLMBool(NSDictionary *dict, NSString *key, BOOL fallback) {
     id value = dict[key];
-    if (!value) {
+    if (![value respondsToSelector:@selector(boolValue)]) {
         return fallback;
     }
     return [value boolValue];
@@ -79,12 +79,18 @@ static void VLMLoadPrefs(void) {
     gEditMenus = VLMBool(dict, @"EditMenus", YES);
     gDebug = VLMBool(dict, @"Debug", NO);
     VLMSetDebugLoggingEnabled(gDebug);
-    gRegistry = [dict[VLMMenuRegistryKey] isKindOfClass:[NSArray class]]
-        ? [dict[VLMMenuRegistryKey] copy] : @[];
+    // Preferences survive upgrades and can contain partial records written by
+    // an older process. Never let malformed shared data crash every UIKit host
+    // during tweak construction.
+    gRegistry = [VLMSanitizeRegistryRecords(dict[VLMMenuRegistryKey]) copy];
     NSMutableDictionary<NSString *, NSDictionary *> *registryIndex = [NSMutableDictionary dictionaryWithCapacity:gRegistry.count];
-    for (NSDictionary *record in gRegistry) {
+    for (id candidate in gRegistry) {
+        if (![candidate isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        NSDictionary *record = candidate;
         NSString *recordID = record[@"id"];
-        if (recordID.length > 0) {
+        if ([recordID isKindOfClass:[NSString class]] && recordID.length > 0) {
             registryIndex[recordID] = record;
         }
     }
@@ -92,6 +98,29 @@ static void VLMLoadPrefs(void) {
     NSString *bundleID = VLMCurrentBundleID();
     gResolvedEditPolicy = [VLMResolvedPolicyForKindInPrefs(dict, bundleID, VLMMenuKindEdit) copy];
     gResolvedContextPolicy = [VLMResolvedPolicyForKindInPrefs(dict, bundleID, VLMMenuKindContext) copy];
+}
+
+static BOOL VLMLoadPrefsFailClosed(void) {
+    @try {
+        VLMLoadPrefs();
+        return YES;
+    } @catch (NSException *exception) {
+        // A tweak must never take its host application down because a shared
+        // preference value has the wrong shape. Keep hooks inert in this
+        // process and allow a later clean reload to recover.
+        gEnabled = NO;
+        gContextMenus = NO;
+        gEditMenus = NO;
+        gDebug = NO;
+        gRegistry = @[];
+        gRegistryByID = @{};
+        gResolvedEditPolicy = VLMRulesNormalizedPolicy(nil);
+        gResolvedContextPolicy = VLMRulesNormalizedPolicy(nil);
+        NSLog(@"[VerticalMenu] disabled in %@ after invalid preferences: %@",
+              [NSBundle mainBundle].bundleIdentifier ?: @"?",
+              exception.reason ?: exception.name);
+        return NO;
+    }
 }
 
 static BOOL VLMContextOn(void) {
@@ -3323,7 +3352,7 @@ static const void *kVLMEditDelegateProxyKey = &kVLMEditDelegateProxyKey;
 
 static void VLMPrefsChanged(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        VLMLoadPrefs();
+        VLMLoadPrefsFailClosed();
         VLMLog(@"prefs reload enabled=%d context=%d edit=%d debug=%d registry=%lu", gEnabled, gContextMenus, gEditMenus, gDebug, (unsigned long)gRegistry.count);
     });
 }
@@ -3339,24 +3368,24 @@ static void VLMIncomingPrefsChanged(CFNotificationCenterRef center, void *observ
 %ctor {
     NSString *bundleID = [NSBundle mainBundle].bundleIdentifier ?: @"";
     BOOL isSpringBoard = [bundleID isEqualToString:@"com.apple.springboard"];
-    VLMLoadPrefs();
+    if (!VLMLoadPrefsFailClosed()) {
+        return;
+    }
     VLMStartPrefsWriterIfNeeded();
     VLMStartIncomingObserverIfNeeded();
     BOOL hookedList = NO;
 
-    // SpringBoard is retained only as the preference bridge. Installing menu
-    // model hooks or running policy migration while it is launching can take
-    // down the shell and force the device into safe mode. Preferences performs
-    // the V2 migration, while ordinary UIKit apps own all menu presentation.
-    if (!isSpringBoard) {
+    // 1.0.50 crash logs show UIKit failing in the navigation bar's private
+    // _backButtonMenu builder while this dylib is loaded. ContextMenus hooks
+    // UIMenu process-wide, so it also intercepts system navigation menus long
+    // before the user opens a context menu. The edit delegate and deferred
+    // provider groups have the same process-wide blast radius. Keep all three
+    // groups compiled but inactive until they are replaced with narrow,
+    // device-verified presentation hooks.
+    if (NO) {
         %init(ContextMenus);
-        if (objc_getClass("UIDeferredMenuElement")) {
-            %init(DeferredMenus);
-        }
-    }
-
-    if (!isSpringBoard && objc_getClass("UIEditMenuInteraction")) {
         %init(EditMenuModel);
+        %init(DeferredMenus);
     }
 
     if (!isSpringBoard && objc_getClass("_UIEditMenuListView")) {

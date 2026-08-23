@@ -158,6 +158,12 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
 
+## 更新（1.0.51）
+
+- 修复旧版或异常 `MenuRegistryV2` 数据在每个 UIKit 应用启动阶段被直接遍历、导致设置、备忘录、Safari 等宿主应用一起闪退的问题；运行时读取现在始终先清洗数据。
+- 配置解析加入“宿主优先”保护：即使共享偏好损坏，也只在当前进程停用插件，不再让宿主应用崩溃。
+- 根据 1.0.50 的 Sileo 崩溃栈，暂停会进入系统导航栏 `_backButtonMenu` 的全局 `UIMenu` 钩子，以及 1.0.49 新增的 `UIEditMenuInteraction`、延迟菜单 provider 代理；1.0.51 仅保留不会在 App 启动阶段命中的文本选择列表布局路径，待更窄的入口通过真机验证后再恢复上下文菜单能力。
+
 ## 更新（1.0.50）
 
 - 修复 V2 包安装后 SpringBoard 进入安全模式：SpringBoard 只保留偏好通信，不再安装菜单 UI hook 或执行策略迁移；V2 迁移改由“设置”进程完成。

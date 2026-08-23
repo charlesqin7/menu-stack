@@ -97,9 +97,11 @@ static const void *kVLMVisibilityItemIDKey = &kVLMVisibilityItemIDKey;
     NSMutableArray<NSString *> *ids = [NSMutableArray array];
     NSMutableSet<NSString *> *seen = [NSMutableSet set];
     void (^appendItem)(NSDictionary *) = ^(NSDictionary *item) {
+        if (![item isKindOfClass:[NSDictionary class]]) return;
         NSString *itemID = item[@"id"];
         NSString *title = item[@"title"] ?: item[@"label"] ?: VLMLabelForItemID(itemID);
-        if (itemID.length == 0) return;
+        if (![itemID isKindOfClass:[NSString class]] || itemID.length == 0) return;
+        if (![title isKindOfClass:[NSString class]]) title = VLMLabelForItemID(itemID);
         if (title.length > 0) self->_labels[itemID] = title;
         if (![seen containsObject:itemID]) {
             [seen addObject:itemID];
@@ -108,8 +110,7 @@ static const void *kVLMVisibilityItemIDKey = &kVLMVisibilityItemIDKey;
     };
     if ([self isGlobal]) {
         for (NSDictionary *item in VLMCatalogItems()) appendItem(item);
-        NSArray<NSDictionary *> *registry = [prefs[VLMMenuRegistryKey] isKindOfClass:[NSArray class]]
-            ? prefs[VLMMenuRegistryKey] : @[];
+        NSArray<NSDictionary *> *registry = VLMSanitizeRegistryRecords(prefs[VLMMenuRegistryKey]);
         for (NSDictionary *record in registry) {
             if (![record[@"kind"] isEqualToString:_kind]) continue;
             NSArray<NSDictionary *> *items = [record[@"items"] isKindOfClass:[NSArray class]] ? record[@"items"] : @[];
@@ -137,7 +138,9 @@ static const void *kVLMVisibilityItemIDKey = &kVLMVisibilityItemIDKey;
 }
 
 - (void)reloadFromPrefs {
-    _prefsSnapshot = VLMReadPrefsDictionary();
+    NSMutableDictionary *safePrefs = [VLMReadPrefsDictionary() mutableCopy] ?: [NSMutableDictionary dictionary];
+    safePrefs[VLMMenuRegistryKey] = VLMSanitizeRegistryRecords(safePrefs[VLMMenuRegistryKey]);
+    _prefsSnapshot = [safePrefs copy];
     _labels = [NSMutableDictionary dictionary];
     if ([self isGlobal]) {
         _kind = self.globalKind ?: VLMMenuKindEdit;

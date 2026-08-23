@@ -1,6 +1,6 @@
 Package: com.qins.verticalmenu
 Name: 纵向菜单
-Version: 1.0.50
+Version: 1.0.51
 Description: 把 iOS 16/17 长按菜单从横向改成纵向：上下文菜单 compact/palette 行，以及文本选择的拷贝粘贴条。可在设置里自定义菜单项顺序。
 Maintainer: Charles Qin <qinsheng77@gmail.com>
 Author: Charles Qin <qinsheng77@gmail.com>
