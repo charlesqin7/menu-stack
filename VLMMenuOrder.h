@@ -15,6 +15,7 @@ extern NSString * const VLMMenuKindContext;
 
 NSDictionary<NSString *, id> *VLMReadPrefsDictionary(void);
 void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp);
+void VLMStartPrefsWriterIfNeeded(void);
 
 NSArray<NSDictionary *> *VLMCatalogItems(void);
 NSArray<NSString *> *VLMCoreOrderIDs(void);

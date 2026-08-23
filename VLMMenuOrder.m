@@ -1,5 +1,7 @@
 #import "VLMMenuOrder.h"
 
+#import <dlfcn.h>
+
 #if __has_include(<rootless.h>)
 #import <rootless.h>
 #endif
@@ -137,6 +139,125 @@ static void VLMWriteCFPrefValue(NSString *key, id value) {
     CFPreferencesSetValue(cfKey, cfValue, ident, kCFPreferencesCurrentUser, kCFPreferencesCurrentHost);
 }
 
+static BOOL gApplyingRemotePrefs = NO;
+
+static BOOL VLMIsSpringBoardProcess(void) {
+    NSString *bundle = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
+    return [bundle isEqualToString:@"com.apple.springboard"];
+}
+
+static void VLMTryUnsandbox(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        static const char *libs[] = {
+            "/var/jb/basebin/jbclient.dylib",
+            "/var/jb/usr/lib/libjailbreak.dylib",
+            "/usr/lib/libjailbreak.dylib",
+            NULL,
+        };
+        for (const char **path = libs; *path; path++) {
+            void *handle = dlopen(*path, RTLD_NOW);
+            if (!handle) {
+                continue;
+            }
+            int (*unsandbox)(void) = dlsym(handle, "jbclient_unsandbox");
+            if (!unsandbox) {
+                unsandbox = dlsym(handle, "unsandbox");
+            }
+            if (!unsandbox) {
+                unsandbox = dlsym(handle, "jbclient_process_unsandbox");
+            }
+            if (unsandbox) {
+                unsandbox();
+                break;
+            }
+        }
+    });
+}
+
+static BOOL VLMWritePrefsFiles(NSDictionary<NSString *, id> *changes) {
+    BOOL wrote = NO;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    for (NSString *path in VLMPrefsFilePaths()) {
+        NSString *directory = [path stringByDeletingLastPathComponent];
+        BOOL isDirectory = NO;
+        BOOL exists = [fm fileExistsAtPath:directory isDirectory:&isDirectory];
+        if (!exists || !isDirectory) {
+            if (![fm createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:nil error:nil]) {
+                continue;
+            }
+        }
+        if (![fm isWritableFileAtPath:directory] && ![fm isWritableFileAtPath:path]) {
+            continue;
+        }
+        NSMutableDictionary *fileDict = [[NSDictionary dictionaryWithContentsOfFile:path] mutableCopy] ?: [NSMutableDictionary dictionary];
+        [fileDict addEntriesFromDictionary:changes];
+        if ([fileDict writeToFile:path atomically:YES]) {
+            wrote = YES;
+        }
+    }
+    return wrote;
+}
+
+static CFDataRef VLMPrefsPortCallback(CFMessagePortRef port, SInt32 msgid, CFDataRef data, void *info) {
+    (void)port;
+    (void)msgid;
+    (void)info;
+    if (!data) {
+        return NULL;
+    }
+    NSDictionary *updates = [NSPropertyListSerialization propertyListWithData:(__bridge NSData *)data
+                                                                      options:0
+                                                                       format:NULL
+                                                                        error:NULL];
+    if (![updates isKindOfClass:[NSDictionary class]] || updates.count == 0) {
+        return NULL;
+    }
+    gApplyingRemotePrefs = YES;
+    VLMWritePrefsValues(updates, NO);
+    gApplyingRemotePrefs = NO;
+    return NULL;
+}
+
+void VLMStartPrefsWriterIfNeeded(void) {
+    if (!VLMIsSpringBoardProcess()) {
+        return;
+    }
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        Boolean shouldFree = false;
+        CFMessagePortRef port = CFMessagePortCreateLocal(kCFAllocatorDefault,
+                                                         CFSTR("com.qins.verticalmenu.prefsport"),
+                                                         VLMPrefsPortCallback,
+                                                         NULL,
+                                                         &shouldFree);
+        if (port) {
+            CFMessagePortSetDispatchQueue(port, dispatch_get_main_queue());
+        }
+    });
+}
+
+static BOOL VLMSendPrefsToSpringBoard(NSDictionary<NSString *, id> *changes) {
+    if (gApplyingRemotePrefs || VLMIsSpringBoardProcess() || changes.count == 0) {
+        return NO;
+    }
+    CFMessagePortRef remote = CFMessagePortCreateRemote(kCFAllocatorDefault, CFSTR("com.qins.verticalmenu.prefsport"));
+    if (!remote) {
+        return NO;
+    }
+    NSError *error = nil;
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:changes
+                                                              format:NSPropertyListBinaryFormat_v1_0
+                                                             options:0
+                                                               error:&error];
+    SInt32 status = kCFMessagePortIsInvalid;
+    if (data) {
+        status = CFMessagePortSendRequest(remote, 1, (__bridge CFDataRef)data, 2.0, 0, NULL, NULL);
+    }
+    CFRelease(remote);
+    return status == kCFMessagePortSuccess;
+}
+
 void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp) {
     if (updates.count == 0 && !bumpStamp) {
         return;
@@ -145,25 +266,20 @@ void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp) 
     if (bumpStamp) {
         changes[VLMPrefsStampKey] = @((NSTimeInterval)[[NSDate date] timeIntervalSince1970]);
     }
+
+    VLMTryUnsandbox();
     for (NSString *key in changes) {
         VLMWriteCFPrefValue(key, changes[key]);
     }
     CFPreferencesAppSynchronize((__bridge CFStringRef)VLMPrefsIdentifier);
 
-    for (NSString *path in VLMPrefsFilePaths()) {
-        NSString *directory = [path stringByDeletingLastPathComponent];
-        BOOL isDirectory = NO;
-        BOOL directoryExists = [[NSFileManager defaultManager] fileExistsAtPath:directory isDirectory:&isDirectory];
-        if (!directoryExists || !isDirectory) {
-            continue;
-        }
-        if (![[NSFileManager defaultManager] isWritableFileAtPath:directory] &&
-            ![[NSFileManager defaultManager] isWritableFileAtPath:path]) {
-            continue;
-        }
-        NSMutableDictionary *fileDict = [[NSDictionary dictionaryWithContentsOfFile:path] mutableCopy] ?: [NSMutableDictionary dictionary];
-        [fileDict addEntriesFromDictionary:changes];
-        [fileDict writeToFile:path atomically:YES];
+    BOOL wroteFile = VLMWritePrefsFiles(changes);
+    if (!wroteFile) {
+        VLMTryUnsandbox();
+        wroteFile = VLMWritePrefsFiles(changes);
+    }
+    if (!wroteFile) {
+        VLMSendPrefsToSpringBoard(changes);
     }
 
     CFNotificationCenterPostNotification(

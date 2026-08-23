@@ -131,6 +131,10 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
 
+## 更新（1.0.39）
+
+- 第三方 App（例如 X）选字后设置里没有记录：沙盒经常写不进全局配置，改为必要时经 SpringBoard 写入；输入框聚焦时按实际选字菜单采集，不再要求必须先对上内置目录。
+
 ## 更新（1.0.38）
 
 - 按各 App 实际弹出的菜单项记录，不再只认内置目录。备忘录里的「学习」等后半截/嵌套项也会出现在设置里，其它 App 同样按真实选项采集。

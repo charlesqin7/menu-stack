@@ -572,6 +572,7 @@ static void VLMRememberMenuProfile(NSString *kind, NSArray<NSDictionary *> *item
             return;
         }
     }
+    NSLog(@"[VerticalMenu] remember %@ in %@ items=%lu", kind, VLMCurrentBundleID(), (unsigned long)ids.count);
     NSDictionary *built = VLMBuildProfile(
         kind,
         VLMCurrentBundleID(),
@@ -601,6 +602,81 @@ static BOOL VLMElementsLookLikeActionMenu(NSArray *elements) {
         }
     }
     return hits >= 2;
+}
+
+static UIResponder *VLMFindFirstResponder(void) {
+    NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+            if ([scene isKindOfClass:[UIWindowScene class]]) {
+                [windows addObjectsFromArray:((UIWindowScene *)scene).windows];
+            }
+        }
+    }
+    if (windows.count == 0) {
+        [windows addObjectsFromArray:UIApplication.sharedApplication.windows];
+    }
+    SEL sel = NSSelectorFromString(@"firstResponder");
+    for (UIWindow *window in windows) {
+        if (![window respondsToSelector:sel]) {
+            continue;
+        }
+        UIResponder *responder = ((id (*)(id, SEL))objc_msgSend)(window, sel);
+        if ([responder isKindOfClass:[UIResponder class]]) {
+            return responder;
+        }
+    }
+    return nil;
+}
+
+static BOOL VLMResponderIsTextInput(UIResponder *responder) {
+    while (responder) {
+        if ([responder isKindOfClass:[UITextView class]] ||
+            [responder isKindOfClass:[UITextField class]]) {
+            return YES;
+        }
+        if ([responder conformsToProtocol:@protocol(UITextInput)]) {
+            return YES;
+        }
+        NSString *name = NSStringFromClass(responder.class);
+        if ([name containsString:@"TextView"] ||
+            [name containsString:@"TextField"] ||
+            [name containsString:@"WKContent"]) {
+            return YES;
+        }
+        responder = responder.nextResponder;
+    }
+    return NO;
+}
+
+static BOOL VLMElementsHaveCatalogHit(NSArray *elements) {
+    for (id element in VLMExpandedMenuElements(elements, YES)) {
+        NSString *itemID = VLMCatalogIDForElement(element);
+        if (itemID.length > 0 && ![itemID hasPrefix:@"custom:"]) {
+            return YES;
+        }
+    }
+    return NO;
+}
+
+static void VLMRememberUIMenuElements(NSArray *orig, NSString *fallbackKind) {
+    if (orig.count == 0) {
+        return;
+    }
+    NSArray *expanded = VLMExpandedMenuElements(orig, YES);
+    NSArray<NSDictionary *> *records = VLMItemRecordsFromElements(expanded);
+    if (records.count < 2) {
+        return;
+    }
+    BOOL looks = VLMElementsLookLikeActionMenu(expanded) || VLMElementsLookLikeActionMenu(orig);
+    BOOL textInput = VLMResponderIsTextInput(VLMFindFirstResponder());
+    if (textInput && (looks || VLMElementsHaveCatalogHit(expanded))) {
+        VLMRememberMenuProfile(VLMMenuKindEdit, records);
+        return;
+    }
+    if (looks) {
+        VLMRememberMenuProfile(fallbackKind, records);
+    }
 }
 
 static NSArray *VLMFindEditMenuCommands(id host, NSString **outKey) {
@@ -2493,10 +2569,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
     if (!gEnabled || orig.count == 0) {
         return orig;
     }
-    NSArray *expanded = VLMExpandedMenuElements(orig, YES);
-    if (VLMElementsLookLikeActionMenu(expanded) || VLMElementsLookLikeActionMenu(orig)) {
-        VLMRememberMenuProfile(VLMMenuKindContext, VLMItemRecordsFromElements(expanded));
-    }
+    VLMRememberUIMenuElements(orig, VLMMenuKindContext);
     NSArray *sorted = VLMRewrittenElementsForKind(orig, VLMMenuKindContext);
     if (sorted != orig) {
         VLMLog(@"rewrote UIMenu children %lu -> %lu", (unsigned long)orig.count, (unsigned long)sorted.count);
@@ -2566,10 +2639,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
 
 - (UIMenu *)menuByReplacingChildren:(NSArray *)newChildren {
     if (gEnabled && newChildren.count > 0) {
-        NSArray *expanded = VLMExpandedMenuElements(newChildren, YES);
-        if (VLMElementsLookLikeActionMenu(expanded) || VLMElementsLookLikeActionMenu(newChildren)) {
-            VLMRememberMenuProfile(VLMMenuKindContext, VLMItemRecordsFromElements(expanded));
-        }
+        VLMRememberUIMenuElements(newChildren, VLMMenuKindContext);
     }
     if (VLMContextOn()) {
         newChildren = VLMRewrittenElementsForKind(newChildren, VLMMenuKindContext);
@@ -2783,6 +2853,66 @@ static BOOL VLMIsInsideEditMenu(id view) {
 
 %end
 
+static void VLMRememberSuggestedEditActions(id menuOrNil, NSArray *suggested) {
+    NSArray *source = nil;
+    if ([menuOrNil isKindOfClass:[UIMenu class]]) {
+        source = ((UIMenu *)menuOrNil).children;
+    }
+    if (source.count < 2) {
+        source = suggested;
+    }
+    if (source.count >= 2) {
+        VLMRememberUIMenuElements(source, VLMMenuKindEdit);
+    }
+}
+
+%group TextInputEditMenu
+
+%hook UITextView
+
+- (id)editMenuInteraction:(id)interaction menuForConfiguration:(id)config suggestedActions:(NSArray *)actions {
+    id menu = %orig;
+    VLMRememberSuggestedEditActions(menu, actions);
+    return menu;
+}
+
+%end
+
+%hook UITextField
+
+- (id)editMenuInteraction:(id)interaction menuForConfiguration:(id)config suggestedActions:(NSArray *)actions {
+    id menu = %orig;
+    VLMRememberSuggestedEditActions(menu, actions);
+    return menu;
+}
+
+%end
+
+%end
+
+%group EditMenuInteractionHook
+
+%hook UIEditMenuInteraction
+
+- (void)presentEditMenuWithConfiguration:(id)configuration {
+    %orig;
+    NSArray *actions = nil;
+    @try {
+        id value = [configuration valueForKey:@"suggestedActions"];
+        if ([value isKindOfClass:[NSArray class]]) {
+            actions = value;
+        }
+    } @catch (__unused NSException *exception) {
+    }
+    if (actions.count >= 2) {
+        VLMRememberUIMenuElements(actions, VLMMenuKindEdit);
+    }
+}
+
+%end
+
+%end
+
 #pragma mark - Constructor
 
 static void VLMPrefsChanged(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
@@ -2792,6 +2922,7 @@ static void VLMPrefsChanged(CFNotificationCenterRef center, void *observer, CFSt
 
 %ctor {
     VLMLoadPrefs();
+    VLMStartPrefsWriterIfNeeded();
     CFNotificationCenterAddObserver(
         CFNotificationCenterGetDarwinNotifyCenter(),
         NULL,
@@ -2815,6 +2946,13 @@ static void VLMPrefsChanged(CFNotificationCenterRef center, void *observer, CFSt
     }
     if (objc_getClass("_UIEditMenuContainerView")) {
         %init(EditMenuContainer);
+    }
+    SEL editMenuSel = @selector(editMenuInteraction:menuForConfiguration:suggestedActions:);
+    if ([UITextView instancesRespondToSelector:editMenuSel] || [UITextField instancesRespondToSelector:editMenuSel]) {
+        %init(TextInputEditMenu);
+    }
+    if (objc_getClass("UIEditMenuInteraction")) {
+        %init(EditMenuInteractionHook);
     }
 
     NSLog(@"[VerticalMenu] loaded in %@ enabled=%d context=%d edit=%d debug=%d list=%d profiles=%lu",
