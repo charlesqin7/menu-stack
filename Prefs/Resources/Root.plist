@@ -115,10 +115,26 @@
 		<dict>
 			<key>cell</key>
 			<string>PSButtonCell</string>
+			<key>id</key>
+			<string>respring</string>
 			<key>label</key>
 			<string>注销 SpringBoard</string>
 			<key>action</key>
 			<string>respring</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>关于</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSTitleValueCell</string>
+			<key>label</key>
+			<string>版本</string>
+			<key>get</key>
+			<string>getVersion:</string>
 		</dict>
 	</array>
 	<key>title</key>

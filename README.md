@@ -130,6 +130,11 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
 
+## 更新（1.0.32）
+
+- 修复设置里「注销 SpringBoard」点了没反应：改为走系统注销接口，并弹出确认。
+- 设置页「关于」里显示插件版本号。
+
 ## 更新（1.0.31）
 
 - 排序列表补上 Safari 常见项：查找所选内容、搜索网页、新建快速备忘录、拷贝链接等。
