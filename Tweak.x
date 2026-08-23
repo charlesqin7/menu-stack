@@ -822,6 +822,8 @@ static void VLMDisableConstraints(UIView *view);
 static BOOL VLMImageIsUsableIcon(UIImage *image);
 static void VLMRefreshArrow(UIView *host);
 static void VLMScheduleArrow(UIView *host);
+static void VLMConcealStaleChrome(UIView *host);
+static void VLMHideStrayBackdrops(UIView *host);
 
 static UICollectionView *VLMFindCollectionView(id view) {
     if ([view isKindOfClass:[UICollectionView class]]) {

@@ -7,6 +7,11 @@
 
 extern int64_t sandbox_extension_consume(const char *extension_token);
 
+@interface NSDistributedNotificationCenter : NSNotificationCenter
++ (NSDistributedNotificationCenter *)defaultCenter;
+- (void)postNotificationName:(NSNotificationName)name object:(NSString *)object userInfo:(NSDictionary *)userInfo deliverImmediately:(BOOL)deliverImmediately;
+@end
+
 #if __has_include(<rootless.h>)
 #import <rootless.h>
 #endif
