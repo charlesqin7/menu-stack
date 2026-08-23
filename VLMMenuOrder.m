@@ -37,6 +37,11 @@ NSString * const VLMIncomingNotificationName = @"com.qins.verticalmenu/IncomingP
 static BOOL gApplyingRemotePrefs = NO;
 static BOOL gReplaceProfiles = NO;
 static BOOL gUnsandboxed = NO;
+static BOOL gDebugLoggingEnabled = NO;
+
+#define VLMStorageLog(fmt, ...) do { \
+    if (gDebugLoggingEnabled) NSLog(@"[VerticalMenu] " fmt, ##__VA_ARGS__); \
+} while (0)
 
 static void VLMTryUnsandbox(void);
 static dispatch_queue_t VLMBackgroundIngestQueue(void);
@@ -284,6 +289,10 @@ static NSArray<NSString *> *VLMPrefsFilePaths(void) {
     add(@"/var/jb/Library/Preferences/com.qins.verticalmenu.plist");
     add(@"/var/mobile/Library/Preferences/com.qins.verticalmenu.plist");
     return paths;
+}
+
+void VLMSetDebugLoggingEnabled(BOOL enabled) {
+    gDebugLoggingEnabled = enabled;
 }
 
 static NSDictionary *VLMCopyCFPrefs(CFStringRef host) {
@@ -700,8 +709,8 @@ static BOOL VLMDropIncomingPrefs(NSDictionary<NSString *, id> *changes) {
         } @catch (__unused NSException *exception) {
         }
     });
-    NSLog(@"[VerticalMenu] prefs drop sandbox=%d shared=%d tmp=%@ bundle=%@",
-          sandboxWrote, sharedWrote, tmp, bundle);
+    VLMStorageLog(@"prefs drop sandbox=%d shared=%d tmp=%@ bundle=%@",
+                  sandboxWrote, sharedWrote, tmp, bundle);
     return sandboxWrote || sharedWrote;
 }
 
@@ -746,19 +755,19 @@ static void VLMIngestIncomingPrefsNow(void) {
         VLMMigrateToGlobalRulesIfNeeded();
         return;
     }
-    NSLog(@"[VerticalMenu] ingest paths=%lu sb=%d first=%@",
-          (unsigned long)paths.count,
-          VLMIsSpringBoardProcess(),
-          paths.firstObject);
+    VLMStorageLog(@"ingest paths=%lu sb=%d first=%@",
+                  (unsigned long)paths.count,
+                  VLMIsSpringBoardProcess(),
+                  paths.firstObject);
     gApplyingRemotePrefs = YES;
     NSMutableArray<NSDictionary *> *incoming = [NSMutableArray array];
     for (NSString *path in paths) {
         NSDictionary *dict = [NSDictionary dictionaryWithContentsOfFile:path];
         if (dict.count > 0) {
             [incoming addObject:dict];
-            NSLog(@"[VerticalMenu] ingest read %@ profiles=%lu",
-                  path,
-                  (unsigned long)VLMSanitizeProfiles(dict[VLMMenuProfilesKey]).count);
+            VLMStorageLog(@"ingest read %@ profiles=%lu",
+                          path,
+                          (unsigned long)VLMSanitizeProfiles(dict[VLMMenuProfilesKey]).count);
         }
     }
     NSDictionary *merged = VLMReadPrefsDictionary();
@@ -848,10 +857,10 @@ void VLMWritePrefsValues(NSDictionary<NSString *, id> *updates, BOOL bumpStamp) 
         });
         ported = YES;
     }
-    NSLog(@"[VerticalMenu] prefs persist file=%d port=%d drop=%d profiles=%lu in %@",
-          wroteFile, ported, dropped,
-          (unsigned long)VLMSanitizeProfiles(changes[VLMMenuProfilesKey]).count,
-          [[NSBundle mainBundle] bundleIdentifier] ?: @"?");
+    VLMStorageLog(@"prefs persist file=%d port=%d drop=%d profiles=%lu in %@",
+                  wroteFile, ported, dropped,
+                  (unsigned long)VLMSanitizeProfiles(changes[VLMMenuProfilesKey]).count,
+                  [[NSBundle mainBundle] bundleIdentifier] ?: @"?");
 
     CFNotificationCenterPostNotification(
         CFNotificationCenterGetDarwinNotifyCenter(),
@@ -1742,14 +1751,18 @@ static NSDictionary *VLMNormalizedGlobalRule(NSDictionary *rule, NSString *kind)
     };
 }
 
-static NSDictionary *VLMGlobalRulesFromPrefs(void) {
-    id raw = VLMReadPrefsDictionary()[VLMGlobalRulesKey];
+static NSDictionary *VLMGlobalRulesFromDictionary(NSDictionary<NSString *, id> *prefs) {
+    id raw = [prefs isKindOfClass:[NSDictionary class]] ? prefs[VLMGlobalRulesKey] : nil;
     return [raw isKindOfClass:[NSDictionary class]] ? raw : @{};
 }
 
 NSDictionary *VLMGlobalRuleForKind(NSString *kind) {
+    return VLMGlobalRuleForKindInPrefs(VLMReadPrefsDictionary(), kind);
+}
+
+NSDictionary *VLMGlobalRuleForKindInPrefs(NSDictionary<NSString *, id> *prefs, NSString *kind) {
     NSString *key = [kind isEqualToString:VLMMenuKindContext] ? VLMMenuKindContext : VLMMenuKindEdit;
-    NSDictionary *rules = VLMGlobalRulesFromPrefs();
+    NSDictionary *rules = VLMGlobalRulesFromDictionary(prefs);
     id rule = rules[key];
     return VLMNormalizedGlobalRule([rule isKindOfClass:[NSDictionary class]] ? rule : @{}, key);
 }
@@ -1803,7 +1816,7 @@ void VLMWriteGlobalRule(NSString *kind,
                         NSArray<NSDictionary *> *items,
                         BOOL customOrder) {
     NSString *key = [kind isEqualToString:VLMMenuKindContext] ? VLMMenuKindContext : VLMMenuKindEdit;
-    NSMutableDictionary *rules = [VLMGlobalRulesFromPrefs() mutableCopy] ?: [NSMutableDictionary dictionary];
+    NSMutableDictionary *rules = [VLMGlobalRulesFromDictionary(VLMReadPrefsDictionary()) mutableCopy] ?: [NSMutableDictionary dictionary];
     NSMutableDictionary *rule = [VLMNormalizedGlobalRule(rules[key], key) mutableCopy];
     if (order) {
         rule[@"order"] = VLMSanitizeHiddenIDs(order);
