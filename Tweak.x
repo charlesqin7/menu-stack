@@ -326,6 +326,29 @@ static BOOL VLMShouldGrowDownward(UIView *host) {
     return growDown;
 }
 
+static NSArray<UIWindow *> *VLMAllWindows(UIWindow *preferred) {
+    NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
+    void (^addWindow)(UIWindow *) = ^(UIWindow *window) {
+        if (window && ![windows containsObject:window]) {
+            [windows addObject:window];
+        }
+    };
+    addWindow(preferred);
+    for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) {
+            continue;
+        }
+        UIWindowScene *windowScene = (UIWindowScene *)scene;
+        if (@available(iOS 15.0, *)) {
+            addWindow(windowScene.keyWindow);
+        }
+        for (UIWindow *window in windowScene.windows) {
+            addWindow(window);
+        }
+    }
+    return windows;
+}
+
 static UIView *VLMFirstResponderInView(UIView *view) {
     if (view.isFirstResponder) {
         return view;
@@ -355,17 +378,38 @@ static CGRect VLMConvertTextRectToWindow(id<UITextInput> input, CGRect rect, UIW
     return [view convertRect:rect toView:window];
 }
 
+static UIView *VLMResponderFromWindow(UIWindow *window) {
+    if (!window) {
+        return nil;
+    }
+    @try {
+        id responder = [window valueForKey:@"firstResponder"];
+        if ([responder isKindOfClass:[UIView class]]) {
+            return responder;
+        }
+    } @catch (__unused NSException *exception) {
+    }
+    return VLMFirstResponderInView(window);
+}
+
 static CGRect VLMSelectionRectInWindow(UIWindow *window) {
     if (!window) {
         return CGRectNull;
     }
 
-    UIView *responder = VLMFirstResponderInView(window);
-    if (![responder conformsToProtocol:@protocol(UITextInput)] && window.windowScene) {
-        for (UIWindow *other in window.windowScene.windows) {
-            responder = VLMFirstResponderInView(other);
-            if ([responder conformsToProtocol:@protocol(UITextInput)]) {
-                window = other;
+    UIView *responder = nil;
+    UIWindow *ownerWindow = window;
+    for (UIWindow *candidate in VLMAllWindows(window)) {
+        UIView *found = VLMResponderFromWindow(candidate);
+        if (![found conformsToProtocol:@protocol(UITextInput)]) {
+            continue;
+        }
+        id<UITextInput> input = (id<UITextInput>)found;
+        BOOL hasSelection = input.selectedTextRange && !input.selectedTextRange.isEmpty;
+        if (!responder || hasSelection) {
+            responder = found;
+            ownerWindow = candidate;
+            if (hasSelection) {
                 break;
             }
         }
@@ -376,23 +420,28 @@ static CGRect VLMSelectionRectInWindow(UIWindow *window) {
 
     id<UITextInput> input = (id<UITextInput>)responder;
     UITextRange *range = input.selectedTextRange;
-    if (!range || range.isEmpty) {
+    if (!range) {
+        range = input.markedTextRange;
+    }
+    if (!range) {
         return CGRectNull;
     }
 
     CGRect unionRect = CGRectNull;
-    NSArray<UITextSelectionRect *> *rects = [input selectionRectsForRange:range];
-    for (UITextSelectionRect *item in rects) {
-        CGRect converted = VLMConvertTextRectToWindow(input, item.rect, window);
-        if (!CGRectIsNull(converted) && converted.size.height > 0.5) {
-            unionRect = CGRectIsNull(unionRect) ? converted : CGRectUnion(unionRect, converted);
+    if (!range.isEmpty) {
+        NSArray<UITextSelectionRect *> *rects = [input selectionRectsForRange:range];
+        for (UITextSelectionRect *item in rects) {
+            CGRect converted = VLMConvertTextRectToWindow(input, item.rect, ownerWindow);
+            if (!CGRectIsNull(converted) && converted.size.height > 0.5) {
+                unionRect = CGRectIsNull(unionRect) ? converted : CGRectUnion(unionRect, converted);
+            }
+        }
+        if (CGRectIsNull(unionRect) || CGRectIsEmpty(unionRect)) {
+            unionRect = VLMConvertTextRectToWindow(input, [input firstRectForRange:range], ownerWindow);
         }
     }
-    if (CGRectIsNull(unionRect) || CGRectIsEmpty(unionRect)) {
-        unionRect = VLMConvertTextRectToWindow(input, [input firstRectForRange:range], window);
-    }
     if ((CGRectIsNull(unionRect) || CGRectIsEmpty(unionRect)) && range.end) {
-        unionRect = VLMConvertTextRectToWindow(input, [input caretRectForPosition:range.end], window);
+        unionRect = VLMConvertTextRectToWindow(input, [input caretRectForPosition:range.end], ownerWindow);
     }
     if ((CGRectIsNull(unionRect) || CGRectIsEmpty(unionRect)) && [responder isKindOfClass:[UIView class]]) {
         for (id<UIInteraction> interaction in ((UIView *)responder).interactions) {
@@ -400,12 +449,18 @@ static CGRect VLMSelectionRectInWindow(UIWindow *window) {
                 continue;
             }
             if ([interaction respondsToSelector:@selector(locationInView:)]) {
-                CGPoint point = [(UIEditMenuInteraction *)interaction locationInView:window];
+                CGPoint point = [(UIEditMenuInteraction *)interaction locationInView:ownerWindow];
                 if (!CGPointEqualToPoint(point, CGPointZero)) {
                     unionRect = CGRectMake(point.x - 8.0, point.y - 11.0, 16.0, 22.0);
                 }
             }
         }
+    }
+    if (CGRectIsNull(unionRect) || CGRectIsEmpty(unionRect)) {
+        return CGRectNull;
+    }
+    if (ownerWindow != window) {
+        unionRect = [window convertRect:unionRect fromWindow:ownerWindow];
     }
     return unionRect;
 }
@@ -439,9 +494,11 @@ static void VLMPointArrowAtSelection(UIView *host, CGRect selection, BOOL below)
     } else {
         arrowFrame.origin.y = CGRectGetMaxY(listInSuper) - 2.0;
     }
+    VLMDisableConstraints(arrow);
     arrow.hidden = NO;
     arrow.alpha = 1;
     arrow.frame = arrowFrame;
+    arrow.transform = below ? CGAffineTransformIdentity : CGAffineTransformMakeScale(1.0, -1.0);
 }
 
 static BOOL VLMPositionHostNearSelection(UIView *host, CGSize fitted) {
@@ -624,8 +681,13 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
 
     CGSize fitted = VLMVerticalFittingSize(host, host.bounds.size);
     if (VLMIsOnScreen(host)) {
+        CGRect selection = VLMSelectionRectInWindow(host.window);
         if (!VLMPositionHostNearSelection(host, fitted)) {
             BOOL growDown = VLMShouldGrowDownward(host);
+            if (!CGRectIsNull(selection)) {
+                CGRect hostInWindow = [host convertRect:host.bounds toView:host.window];
+                growDown = CGRectGetMidY(selection) <= CGRectGetMidY(hostInWindow);
+            }
             CGRect frame = host.frame;
             CGFloat minX = CGRectGetMinX(frame);
             CGFloat minY = CGRectGetMinY(frame);
@@ -636,6 +698,11 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
             frame.origin.y = growDown ? minY : (maxY - fitted.height);
             host.frame = frame;
             VLMKeepOnScreen(host);
+            if (!CGRectIsNull(selection)) {
+                CGRect hostInWindow = [host convertRect:host.bounds toView:host.window];
+                BOOL below = CGRectGetMidY(selection) <= CGRectGetMidY(hostInWindow);
+                VLMPointArrowAtSelection(host, selection, below);
+            }
             VLMLog(@"anchor growDown=%d frame=%@", growDown, NSStringFromCGRect(host.frame));
         }
     }
@@ -754,62 +821,6 @@ static UIImageView *VLMEnsureFallbackSlot(UIView *content) {
     return slot;
 }
 
-static UIButton *VLMFindPrimaryButton(UIView *view, UIView *skip) {
-    if (!view || view == skip) {
-        return nil;
-    }
-    UIButton *best = [view isKindOfClass:[UIButton class]] ? (UIButton *)view : nil;
-    for (UIView *sub in view.subviews) {
-        UIButton *found = VLMFindPrimaryButton(sub, skip);
-        if (!found) {
-            continue;
-        }
-        if (!best || (found.bounds.size.width * found.bounds.size.height > best.bounds.size.width * best.bounds.size.height)) {
-            best = found;
-        }
-    }
-    return best;
-}
-
-static BOOL VLMButtonHasImage(UIButton *button) {
-    if (!button) {
-        return NO;
-    }
-    if (VLMImageIsUsableIcon(button.currentImage) || VLMImageIsUsableIcon(button.imageView.image)) {
-        return YES;
-    }
-    if (@available(iOS 15.0, *)) {
-        if (VLMImageIsUsableIcon(button.configuration.image)) {
-            return YES;
-        }
-    }
-    return NO;
-}
-
-static void VLMApplyFallbackImageToButton(UIButton *button, UIColor *tint) {
-    UIImage *fallback = VLMFallbackMenuIcon();
-    if (!button || !fallback) {
-        return;
-    }
-    if (@available(iOS 15.0, *)) {
-        UIButtonConfiguration *config = button.configuration;
-        if (config && !VLMImageIsUsableIcon(config.image)) {
-            UIButtonConfiguration *updated = [config copy];
-            updated.image = fallback;
-            if (updated.imagePadding < 8.0) {
-                updated.imagePadding = 10.0;
-            }
-            button.configuration = updated;
-            button.tintColor = tint ?: UIColor.labelColor;
-            return;
-        }
-    }
-    if (!VLMImageIsUsableIcon(button.currentImage)) {
-        [button setImage:fallback forState:UIControlStateNormal];
-        button.tintColor = tint ?: UIColor.labelColor;
-    }
-}
-
 static void VLMSetFrameFromContent(UIView *view, UIView *content, CGRect rectInContent) {
     if (!view) {
         return;
@@ -863,22 +874,7 @@ static void VLMRelayoutCell(UIView *cell) {
     NSMutableArray<UIImageView *> *images = [NSMutableArray array];
     VLMWalkMenuParts(cell, slot, labels, images);
 
-    UIButton *button = VLMFindPrimaryButton(cell, slot);
     UILabel *title = VLMBestTitleLabel(labels);
-    if (!title && button.titleLabel) {
-        title = button.titleLabel;
-    }
-    UIColor *tint = title.textColor ?: UIColor.labelColor;
-    if (button && !VLMButtonHasImage(button)) {
-        VLMApplyFallbackImageToButton(button, tint);
-        [labels removeAllObjects];
-        [images removeAllObjects];
-        VLMWalkMenuParts(cell, slot, labels, images);
-        if (!title) {
-            title = VLMBestTitleLabel(labels) ?: button.titleLabel;
-        }
-    }
-
     UIImageView *nativeIcon = VLMBestNativeIcon(images, slot, content);
 
     CGFloat icon = 22.0;
@@ -887,44 +883,35 @@ static void VLMRelayoutCell(UIView *cell) {
     CGFloat textX = left + icon + gap;
     CGRect iconRect = CGRectMake(left, (content.bounds.size.height - icon) / 2.0, icon, icon);
     CGRect titleRect = CGRectMake(textX, 0, MAX(40.0, content.bounds.size.width - textX - 14.0), content.bounds.size.height);
+    UIColor *tint = title.textColor ?: UIColor.labelColor;
 
     for (UIImageView *candidate in images) {
         if (candidate == slot || VLMIsBackgroundImageView(candidate, content)) {
             continue;
         }
-        if (candidate == nativeIcon) {
-            candidate.hidden = NO;
-            candidate.alpha = 1;
-            candidate.contentMode = UIViewContentModeScaleAspectFit;
-            if (candidate.image.renderingMode != UIImageRenderingModeAlwaysOriginal) {
-                candidate.tintColor = candidate.tintColor ?: tint;
-            }
-            VLMSetFrameFromContent(candidate, content, iconRect);
-        } else if ([candidate.superview isKindOfClass:[UIButton class]] && !VLMImageIsUsableIcon(candidate.image)) {
-            continue;
-        } else {
-            candidate.hidden = YES;
-            candidate.alpha = 0;
-        }
+        candidate.hidden = YES;
+        candidate.alpha = 0;
     }
 
-    if (nativeIcon || VLMButtonHasImage(button)) {
-        slot.hidden = YES;
-        slot.alpha = 0;
-        slot.image = nil;
-    } else {
-        UIView *host = button ?: title.superview ?: content;
-        if (slot.superview != host) {
-            [host addSubview:slot];
+    if (slot.superview != cell) {
+        [cell addSubview:slot];
+    }
+    [cell bringSubviewToFront:slot];
+    slot.hidden = NO;
+    slot.alpha = 1;
+    slot.contentMode = UIViewContentModeScaleAspectFit;
+    if (nativeIcon && VLMImageIsUsableIcon(nativeIcon.image)) {
+        slot.image = nativeIcon.image;
+        if (nativeIcon.image.renderingMode == UIImageRenderingModeAlwaysOriginal) {
+            slot.tintColor = nil;
+        } else {
+            slot.tintColor = nativeIcon.tintColor ?: tint;
         }
-        slot.hidden = NO;
-        slot.alpha = 1;
+    } else {
         slot.image = VLMFallbackMenuIcon();
         slot.tintColor = tint;
-        slot.contentMode = UIViewContentModeScaleAspectFit;
-        slot.frame = (host == content) ? iconRect : [content convertRect:iconRect toView:host];
-        [host bringSubviewToFront:slot];
     }
+    slot.frame = iconRect;
 
     NSString *titleText = title ? VLMTrimmedText(title) : nil;
     for (UILabel *label in labels) {
