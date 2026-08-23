@@ -284,13 +284,25 @@ static void VLMRememberElements(NSArray *elements) {
         return;
     }
 
+    static NSString *lastFingerprint;
+    NSMutableArray<NSString *> *ids = [NSMutableArray array];
+    for (NSDictionary *item in extra) {
+        [ids addObject:item[@"id"]];
+    }
+    NSString *fingerprint = [ids componentsJoinedByString:@"\n"];
+    if ([fingerprint isEqualToString:lastFingerprint]) {
+        return;
+    }
+
     NSDictionary *prefs = VLMPrefsDictionary();
     NSArray *merged = VLMMergedKnownItems(prefs[VLMKnownItemsKey], extra);
     NSArray *stored = prefs[VLMKnownItemsKey];
     if ([stored isKindOfClass:[NSArray class]] && stored.count == merged.count) {
+        lastFingerprint = [fingerprint copy];
         return;
     }
     VLMWritePrefValue(VLMKnownItemsKey, merged);
+    lastFingerprint = [fingerprint copy];
 }
 
 static NSArray *VLMFindEditMenuCommands(id host, NSString **outKey) {
@@ -1992,12 +2004,14 @@ static BOOL VLMIsInsideEditMenu(id view) {
 
 - (NSArray *)children {
     NSArray *orig = %orig;
+    if (gEnabled) {
+        VLMRememberElements(orig);
+    }
     if (!VLMSortOn()) {
         return orig;
     }
     NSArray *sorted = VLMSortedElements(orig);
     if (sorted != orig) {
-        VLMRememberElements(orig);
         VLMLog(@"sorted UIMenu children %lu -> %lu", (unsigned long)orig.count, (unsigned long)sorted.count);
     }
     return sorted;

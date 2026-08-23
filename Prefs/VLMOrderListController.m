@@ -138,7 +138,7 @@ static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadP
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return @"按住右边横条拖动调整顺序。弹出菜单时按这个顺序排列；当前没出现的项目会被跳过，未列出的项目排在后面。改完后请注销或划掉正在用的 App 再打开。";
+    return @"按住右边横条拖动调整顺序。列表包含常用项；弹出过但这里没有的项目，下次打开本页时会补上。当前菜单里没有的项会被跳过。改完后请注销或划掉正在用的 App 再打开。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {

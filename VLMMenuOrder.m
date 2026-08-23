@@ -57,6 +57,18 @@ static NSArray<NSDictionary *> *VLMCatalog(void) {
                 @"sels": @[@"_lookup:", @"lookup:"],
             },
             @{
+                @"id": @"findSelection",
+                @"label": @"查找所选内容",
+                @"titles": @[@"查找所选内容", @"查找所選內容", @"Find Selection", @"Find Selected"],
+                @"sels": @[@"_findSelected:", @"findSelected:", @"find:"],
+            },
+            @{
+                @"id": @"searchWeb",
+                @"label": @"搜索网页",
+                @"titles": @[@"搜索网页", @"搜尋網頁", @"Search Web", @"Search the Web"],
+                @"sels": @[@"_searchWeb:", @"searchWeb:"],
+            },
+            @{
                 @"id": @"translate",
                 @"label": @"翻译",
                 @"titles": @[@"翻译", @"翻譯", @"Translate"],
@@ -65,8 +77,14 @@ static NSArray<NSDictionary *> *VLMCatalog(void) {
             @{
                 @"id": @"share",
                 @"label": @"分享",
-                @"titles": @[@"分享", @"Share"],
+                @"titles": @[@"分享", @"共享", @"Share"],
                 @"sels": @[@"_share:", @"share:", @"share:"],
+            },
+            @{
+                @"id": @"quickNote",
+                @"label": @"新建快速备忘录",
+                @"titles": @[@"新建快速备忘录", @"新增快速備忘錄", @"New Quick Note", @"Add to Quick Note"],
+                @"sels": @[@"_addToQuickNote:", @"addToQuickNote:"],
             },
             @{
                 @"id": @"replace",
@@ -127,6 +145,30 @@ static NSArray<NSDictionary *> *VLMCatalog(void) {
                 @"label": @"朗读",
                 @"titles": @[@"朗读", @"朗讀", @"Speak"],
                 @"sels": @[@"_speak:", @"speak:"],
+            },
+            @{
+                @"id": @"copyLink",
+                @"label": @"拷贝链接",
+                @"titles": @[@"拷贝链接", @"拷貝連結", @"复制链接", @"Copy Link"],
+                @"sels": @[@"copyLink:", @"_copyLink:"],
+            },
+            @{
+                @"id": @"openLink",
+                @"label": @"打开",
+                @"titles": @[@"打开", @"打開", @"打开链接", @"Open", @"Open Link"],
+                @"sels": @[@"openURL:", @"openLink:"],
+            },
+            @{
+                @"id": @"readingList",
+                @"label": @"添加到阅读列表",
+                @"titles": @[@"添加到阅读列表", @"加入閱讀列表", @"Add to Reading List"],
+                @"sels": @[@"addToReadingList:"],
+            },
+            @{
+                @"id": @"autofill",
+                @"label": @"自动填充",
+                @"titles": @[@"自动填充", @"自動填寫", @"AutoFill", @"Autofill"],
+                @"sels": @[@"_autofill:", @"autofill:"],
             },
         ];
     });
