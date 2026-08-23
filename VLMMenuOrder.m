@@ -1289,8 +1289,6 @@ static NSDictionary *VLMNormalizedProfile(NSDictionary *profile) {
     NSString *kind = profile[@"kind"] ?: VLMMenuKindEdit;
     NSString *bundle = profile[@"bundle"] ?: @"";
     NSString *canonicalID = VLMProfileIDForMenu(kind, bundle, nil);
-    NSString *oldID = [profile[@"id"] isKindOfClass:[NSString class]] ? profile[@"id"] : nil;
-    BOOL migrated = oldID.length > 0 && ![oldID isEqualToString:canonicalID];
     return @{
         @"id": canonicalID,
         @"kind": kind,
@@ -1299,7 +1297,7 @@ static NSDictionary *VLMNormalizedProfile(NSDictionary *profile) {
         @"items": items,
         @"order": VLMProfileDisplayOrder(profile),
         @"hidden": VLMProfileHiddenIDs(profile),
-        @"customOrder": @(migrated ? NO : VLMProfileCustomOrder(profile)),
+        @"customOrder": @(VLMProfileCustomOrder(profile)),
         @"seenAt": profile[@"seenAt"] ?: @0,
     };
 }
