@@ -40,6 +40,7 @@ NSString *VLMCurrentBundleID(void);
 NSString *VLMGuessAppName(NSString *_Nullable bundleID);
 NSString *VLMKindDisplayName(NSString *_Nullable kind);
 NSString *VLMProfileIDForMenu(NSString *kind, NSString *_Nullable bundleID, NSArray<NSString *> * _Nullable itemIDs);
+BOOL VLMIsCapturedJunkItem(NSString *_Nullable title, NSString *_Nullable itemID);
 NSArray<NSDictionary *> *VLMSanitizeProfiles(id _Nullable value);
 BOOL VLMProfilesNeedRewrite(id _Nullable raw);
 NSDictionary *_Nullable VLMProfileWithID(NSArray *_Nullable profiles, NSString *_Nullable profileID);

@@ -39,8 +39,9 @@ static const CGFloat kVLMIconLeft = 16.0;
 // rows would sit 22pt closer to the platter edge unless we compensate.
 static const CGFloat kVLMPageGutter = 22.0;
 static const CGFloat kVLMIconTextGap = 10.0;
-static const CGFloat kVLMArrowWidth = 20.0;
-static const CGFloat kVLMArrowHeight = 11.0;
+static const CGFloat kVLMArrowWidth = 18.0;
+static const CGFloat kVLMArrowHeight = 9.0;
+static const CGFloat kVLMArrowOverlap = 1.5;
 
 #pragma mark - Prefs
 
@@ -424,7 +425,7 @@ static NSInteger VLMRankForItemID(NSString *itemID, NSArray<NSString *> *orderID
 static NSArray<NSDictionary *> *VLMItemRecordsFromElements(NSArray *elements) {
     NSMutableArray<NSDictionary *> *records = [NSMutableArray array];
     NSMutableSet<NSString *> *seen = [NSMutableSet set];
-    for (id element in VLMExpandedMenuElements(elements, YES)) {
+    for (id element in VLMExpandedMenuElements(elements, NO)) {
         NSString *itemID = VLMCatalogIDForElement(element);
         if (itemID.length == 0 || [seen containsObject:itemID]) {
             continue;
@@ -437,6 +438,9 @@ static NSArray<NSDictionary *> *VLMItemRecordsFromElements(NSArray *elements) {
             title = VLMLabelForItemID(itemID);
         }
         if (title.length == 0) {
+            continue;
+        }
+        if (VLMIsCapturedJunkItem(title, itemID)) {
             continue;
         }
         [seen addObject:itemID];
@@ -672,19 +676,15 @@ static void VLMRememberUIMenuElements(NSArray *orig, NSString *fallbackKind) {
     if (orig.count == 0) {
         return;
     }
-    NSArray *expanded = VLMExpandedMenuElements(orig, YES);
-    NSArray<NSDictionary *> *records = VLMItemRecordsFromElements(expanded);
-    if (records.count < 2) {
+    if ([fallbackKind isEqualToString:VLMMenuKindEdit]) {
         return;
     }
-    BOOL looks = VLMElementsLookLikeActionMenu(expanded) || VLMElementsLookLikeActionMenu(orig);
-    BOOL textInput = VLMResponderIsTextInput(VLMFindFirstResponder());
-    BOOL catalog = VLMElementsHaveCatalogHit(expanded);
-    if (textInput || catalog) {
-        VLMRememberMenuProfile(VLMMenuKindEdit, records);
+    NSArray *compact = VLMExpandedMenuElements(orig, NO);
+    NSArray<NSDictionary *> *records = VLMItemRecordsFromElements(compact);
+    if (records.count < 2 || records.count > 16) {
         return;
     }
-    if (looks) {
+    if (VLMElementsLookLikeActionMenu(compact) || VLMElementsLookLikeActionMenu(orig)) {
         VLMRememberMenuProfile(fallbackKind, records);
     }
 }
@@ -743,36 +743,42 @@ static NSArray *VLMFindEditMenuCommands(id host, NSString **outKey) {
 }
 
 static void VLMRememberEditMenuFromHost(id host, NSArray *commands, NSArray<NSDictionary *> *extraRecords, BOOL searchHost) {
-    NSMutableArray<NSDictionary *> *records = [VLMItemRecordsFromElements(commands) mutableCopy] ?: [NSMutableArray array];
-    if (searchHost) {
-        NSArray *discovered = VLMDiscoverMenuElements(host, 2);
-        for (NSDictionary *item in VLMItemRecordsFromElements(discovered)) {
-            BOOL exists = NO;
-            for (NSDictionary *seen in records) {
-                if ([seen[@"id"] isEqualToString:item[@"id"]]) {
-                    exists = YES;
+    (void)host;
+    (void)searchHost;
+    NSArray<NSDictionary *> *commandRecords = VLMItemRecordsFromElements(commands);
+    NSMutableArray<NSDictionary *> *records = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    void (^addRecord)(NSString *, NSString *) = ^(NSString *itemID, NSString *title) {
+        if (itemID.length == 0 || [seen containsObject:itemID]) {
+            return;
+        }
+        if (VLMIsCapturedJunkItem(title, itemID)) {
+            return;
+        }
+        [seen addObject:itemID];
+        [records addObject:@{
+            @"id": itemID,
+            @"title": title.length ? title : (VLMLabelForItemID(itemID) ?: itemID),
+        }];
+    };
+
+    if (extraRecords.count >= 2) {
+        for (NSDictionary *cell in extraRecords) {
+            NSString *title = VLMTrimTitle(cell[@"title"]);
+            if (title.length == 0) {
+                continue;
+            }
+            NSString *itemID = VLMCatalogIDForTitle(title) ?: cell[@"id"];
+            for (NSDictionary *command in commandRecords) {
+                if ([VLMTrimTitle(command[@"title"]) isEqualToString:title]) {
+                    itemID = command[@"id"];
                     break;
                 }
             }
-            if (!exists) {
-                [records addObject:item];
+            if (itemID.length == 0) {
+                itemID = VLMCustomItemIDForTitle(title);
             }
-        }
-    }
-    for (NSDictionary *item in extraRecords) {
-        NSString *itemID = item[@"id"];
-        if (itemID.length == 0) {
-            continue;
-        }
-        BOOL exists = NO;
-        for (NSDictionary *seen in records) {
-            if ([seen[@"id"] isEqualToString:itemID]) {
-                exists = YES;
-                break;
-            }
-        }
-        if (!exists) {
-            [records addObject:item];
+            addRecord(itemID, title);
         }
     }
     if (records.count >= 2) {
@@ -783,7 +789,6 @@ static void VLMRememberEditMenuFromHost(id host, NSArray *commands, NSArray<NSDi
 static void VLMSortEditMenuHost(id host) {
     NSString *key = nil;
     NSArray *commands = VLMFindEditMenuCommands(host, &key);
-    VLMRememberEditMenuFromHost(host, commands, nil, YES);
     if (commands.count == 0 || !key) {
         return;
     }
@@ -812,7 +817,6 @@ static const void *kVLMCustomArrowKey = &kVLMCustomArrowKey;
 static const void *kVLMContainerGuardKey = &kVLMContainerGuardKey;
 static const void *kVLMCellGuardKey = &kVLMCellGuardKey;
 static const void *kVLMArrowScheduledKey = &kVLMArrowScheduledKey;
-static const void *kVLMHidSystemArrowKey = &kVLMHidSystemArrowKey;
 static const void *kVLMChromeMaskKey = &kVLMChromeMaskKey;
 static const void *kVLMStrippedButtonKey = &kVLMStrippedButtonKey;
 static const void *kVLMCapturedTitleKey = &kVLMCapturedTitleKey;
@@ -839,8 +843,11 @@ static BOOL gKeyboardVisible = NO;
 static BOOL VLMNameLooksLikeArrow(UIView *view);
 static void VLMDisableConstraints(UIView *view);
 static BOOL VLMImageIsUsableIcon(UIImage *image);
+static UIColor *VLMMenuBackgroundColor(void);
+static CGRect VLMSelectionRectInWindow(UIWindow *window);
 static void VLMRefreshArrow(UIView *host);
 static void VLMScheduleArrow(UIView *host);
+static void VLMHideSystemArrowsNear(UIView *host);
 static void VLMConcealStaleChrome(UIView *host);
 static void VLMHideStrayBackdrops(UIView *host);
 static void VLMRepairEditMenuChrome(UIView *host);
@@ -1001,6 +1008,7 @@ static BOOL VLMIsOnScreen(UIView *view) {
 }
 
 @interface VLMSelectionAnchorView : UIView
+@property (nonatomic, assign) BOOL pointsUp;
 @end
 
 @implementation VLMSelectionAnchorView
@@ -1008,36 +1016,47 @@ static BOOL VLMIsOnScreen(UIView *view) {
 - (instancetype)initWithFrame:(CGRect)frame {
     self = [super initWithFrame:frame];
     if (self) {
+        _pointsUp = YES;
         self.opaque = NO;
         self.backgroundColor = [UIColor clearColor];
         self.userInteractionEnabled = NO;
         self.contentMode = UIViewContentModeRedraw;
-        if (@available(iOS 13.0, *)) {
-            self.tintColor = [UIColor colorWithDynamicProvider:^UIColor *(UITraitCollection *trait) {
-                if (trait.userInterfaceStyle == UIUserInterfaceStyleDark) {
-                    return [UIColor colorWithWhite:0.23 alpha:0.96];
-                }
-                return [UIColor colorWithWhite:1.0 alpha:0.96];
-            }];
-        } else {
-            self.tintColor = [UIColor colorWithWhite:1.0 alpha:0.96];
-        }
+        self.clipsToBounds = NO;
+        self.layer.masksToBounds = NO;
     }
     return self;
 }
 
-- (void)tintColorDidChange {
-    [super tintColorDidChange];
+- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
+    [super traitCollectionDidChange:previousTraitCollection];
     [self setNeedsDisplay];
 }
 
 - (void)drawRect:(CGRect)rect {
+    UIColor *fill = VLMMenuBackgroundColor();
+    if (@available(iOS 13.0, *)) {
+        fill = [fill resolvedColorWithTraitCollection:self.traitCollection];
+    }
+    CGFloat width = CGRectGetWidth(rect);
+    CGFloat height = CGRectGetHeight(rect);
+    CGFloat tipR = 1.15;
     UIBezierPath *path = [UIBezierPath bezierPath];
-    [path moveToPoint:CGPointMake(CGRectGetMidX(rect), CGRectGetMinY(rect))];
-    [path addLineToPoint:CGPointMake(CGRectGetMaxX(rect), CGRectGetMaxY(rect))];
-    [path addLineToPoint:CGPointMake(CGRectGetMinX(rect), CGRectGetMaxY(rect))];
-    [path closePath];
-    [(self.tintColor ?: [UIColor whiteColor]) setFill];
+    if (self.pointsUp) {
+        CGPoint tip = CGPointMake(width / 2.0, 0.35);
+        [path moveToPoint:CGPointMake(0.2, height)];
+        [path addLineToPoint:CGPointMake(tip.x - tipR, tip.y + tipR)];
+        [path addQuadCurveToPoint:CGPointMake(tip.x + tipR, tip.y + tipR) controlPoint:tip];
+        [path addLineToPoint:CGPointMake(width - 0.2, height)];
+        [path closePath];
+    } else {
+        CGPoint tip = CGPointMake(width / 2.0, height - 0.35);
+        [path moveToPoint:CGPointMake(0.2, 0.0)];
+        [path addLineToPoint:CGPointMake(width - 0.2, 0.0)];
+        [path addLineToPoint:CGPointMake(tip.x + tipR, tip.y - tipR)];
+        [path addQuadCurveToPoint:CGPointMake(tip.x - tipR, tip.y - tipR) controlPoint:tip];
+        [path closePath];
+    }
+    [fill setFill];
     [path fill];
 }
 
@@ -1048,10 +1067,16 @@ static BOOL VLMNameLooksLikeArrow(UIView *view) {
         return NO;
     }
     NSString *name = NSStringFromClass(view.class);
-    if ([name containsString:@"Page"]) {
+    if ([name containsString:@"Page"] || [name containsString:@"Collection"] || [name containsString:@"Cell"]) {
         return NO;
     }
-    return [name containsString:@"Arrow"] || [name containsString:@"Pointer"] || [name containsString:@"Callout"] || [name containsString:@"Beak"];
+    return [name containsString:@"Arrow"]
+        || [name containsString:@"Pointer"]
+        || [name containsString:@"Callout"]
+        || [name containsString:@"Beak"]
+        || [name containsString:@"PopoverShape"]
+        || [name containsString:@"MenuPointer"]
+        || [name containsString:@"Anchor"];
 }
 
 static UIView *VLMFindArrowNear(UIView *host) {
@@ -1097,19 +1122,16 @@ static BOOL VLMShouldGrowDownward(UIView *host) {
     }
 
     BOOL growDown = NO;
-    UIView *arrow = VLMFindArrowNear(host);
-    UIView *ref = host.superview ?: host;
-    if (arrow) {
-        CGRect arrowRect = [arrow convertRect:arrow.bounds toView:ref];
-        growDown = CGRectGetMidY(arrowRect) <= CGRectGetMidY(ref.bounds) + 4.0;
-        VLMLog(@"arrow %@ midY=%.1f refMid=%.1f growDown=%d", NSStringFromClass(arrow.class), CGRectGetMidY(arrowRect), CGRectGetMidY(ref.bounds), growDown);
-    } else {
-        UIWindow *window = host.window;
-        if (window) {
-            CGRect onScreen = [host convertRect:host.bounds toView:window];
-            CGFloat topBand = MAX(window.safeAreaInsets.top, 20.0) + 96.0;
-            growDown = onScreen.origin.y < topBand;
-        }
+    UIWindow *window = host.window;
+    CGRect selection = VLMSelectionRectInWindow(window);
+    if (window && !CGRectIsNull(selection) && selection.size.height >= 1.0) {
+        CGRect onScreen = [host convertRect:host.bounds toView:window];
+        growDown = CGRectGetMidY(selection) <= CGRectGetMidY(onScreen);
+        VLMLog(@"selection midY=%.1f hostMid=%.1f growDown=%d", CGRectGetMidY(selection), CGRectGetMidY(onScreen), growDown);
+    } else if (window) {
+        CGRect onScreen = [host convertRect:host.bounds toView:window];
+        CGFloat topBand = MAX(window.safeAreaInsets.top, 20.0) + 96.0;
+        growDown = onScreen.origin.y < topBand;
     }
 
     objc_setAssociatedObject(host, kVLMGrowDownKey, @(growDown), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -1188,6 +1210,45 @@ static UIView *VLMResponderFromWindow(UIWindow *window) {
     return nil;
 }
 
+static void VLMCollectSelectionHandles(UIView *view, NSMutableArray<UIView *> *handles, NSInteger depth) {
+    if (!view || depth < 0 || handles.count > 8) {
+        return;
+    }
+    NSString *name = NSStringFromClass(view.class);
+    if ([name containsString:@"Grabber"] || [name containsString:@"SelectionHandle"] || [name containsString:@"TextRangeView"]) {
+        if (view.bounds.size.width > 1.0 && view.bounds.size.height > 1.0) {
+            [handles addObject:view];
+        }
+    }
+    for (UIView *sub in view.subviews) {
+        VLMCollectSelectionHandles(sub, handles, depth - 1);
+    }
+}
+
+static CGRect VLMTightestSelectionRect(NSArray<UITextSelectionRect *> *rects, id<UITextInput> input, UIWindow *window) {
+    CGRect first = CGRectNull;
+    CGRect tight = CGRectNull;
+    CGFloat tightArea = CGFLOAT_MAX;
+    for (UITextSelectionRect *item in rects) {
+        CGRect converted = VLMConvertTextRectToWindow(input, item.rect, window);
+        if (CGRectIsNull(converted) || converted.size.height < 0.5) {
+            continue;
+        }
+        if (CGRectIsNull(first)) {
+            first = converted;
+        }
+        CGFloat area = converted.size.width * converted.size.height;
+        if (converted.size.width >= 6.0 && converted.size.width <= 160.0 && area < tightArea) {
+            tight = converted;
+            tightArea = area;
+        }
+    }
+    if (!CGRectIsNull(tight)) {
+        return tight;
+    }
+    return first;
+}
+
 static CGRect VLMSelectionRectInWindow(UIWindow *window) {
     if (!window) {
         return CGRectNull;
@@ -1226,14 +1287,45 @@ static CGRect VLMSelectionRectInWindow(UIWindow *window) {
     CGRect unionRect = CGRectNull;
     if (!range.isEmpty) {
         NSArray<UITextSelectionRect *> *rects = [input selectionRectsForRange:range];
-        for (UITextSelectionRect *item in rects) {
-            CGRect converted = VLMConvertTextRectToWindow(input, item.rect, ownerWindow);
-            if (!CGRectIsNull(converted) && converted.size.height > 0.5) {
-                unionRect = CGRectIsNull(unionRect) ? converted : CGRectUnion(unionRect, converted);
+        CGRect firstRect = VLMConvertTextRectToWindow(input, [input firstRectForRange:range], ownerWindow);
+        CGRect tight = VLMTightestSelectionRect(rects, input, ownerWindow);
+        if (!CGRectIsNull(tight) && tight.size.width <= 160.0) {
+            unionRect = tight;
+        } else if (!CGRectIsNull(firstRect) && firstRect.size.width <= 220.0 && firstRect.size.height > 0.5) {
+            unionRect = firstRect;
+        } else {
+            for (UITextSelectionRect *item in rects) {
+                CGRect converted = VLMConvertTextRectToWindow(input, item.rect, ownerWindow);
+                if (!CGRectIsNull(converted) && converted.size.height > 0.5) {
+                    unionRect = CGRectIsNull(unionRect) ? converted : CGRectUnion(unionRect, converted);
+                }
+            }
+            if (!CGRectIsNull(unionRect) && unionRect.size.width > 180.0 && !CGRectIsNull(firstRect) && firstRect.size.width < unionRect.size.width) {
+                unionRect = firstRect;
             }
         }
-        if (CGRectIsNull(unionRect) || CGRectIsEmpty(unionRect)) {
-            unionRect = VLMConvertTextRectToWindow(input, [input firstRectForRange:range], ownerWindow);
+    }
+    if ([responder isKindOfClass:[UIView class]]) {
+        NSMutableArray<UIView *> *handles = [NSMutableArray array];
+        VLMCollectSelectionHandles(responder, handles, 8);
+        if (handles.count >= 2) {
+            CGFloat minX = CGFLOAT_MAX;
+            CGFloat maxX = -CGFLOAT_MAX;
+            CGFloat minY = CGFLOAT_MAX;
+            CGFloat maxY = -CGFLOAT_MAX;
+            for (UIView *handle in handles) {
+                CGRect handleRect = [handle convertRect:handle.bounds toView:ownerWindow];
+                minX = MIN(minX, CGRectGetMidX(handleRect));
+                maxX = MAX(maxX, CGRectGetMidX(handleRect));
+                minY = MIN(minY, CGRectGetMinY(handleRect));
+                maxY = MAX(maxY, CGRectGetMaxY(handleRect));
+            }
+            if (maxX > minX) {
+                CGRect handleRect = CGRectMake(minX, minY, MAX(8.0, maxX - minX), MAX(16.0, maxY - minY));
+                if (CGRectIsNull(unionRect) || unionRect.size.width > handleRect.size.width + 24.0) {
+                    unionRect = handleRect;
+                }
+            }
         }
     }
     if ((CGRectIsNull(unionRect) || CGRectIsEmpty(unionRect)) && range.end) {
@@ -1451,6 +1543,8 @@ static void VLMRepairEditMenuChrome(UIView *host) {
     VLMKillSystemBackdrop(host, 6);
     VLMFitSystemPlatterToHost(host);
     VLMHideStrayBackdrops(host);
+    VLMHideSystemArrowsNear(host);
+    VLMScheduleArrow(host);
 }
 
 static void VLMScheduleChromeRepair(UIView *host) {
@@ -1550,35 +1644,99 @@ static void VLMDumpMenuHierarchy(UIView *host) {
     NSLog(@"[VerticalMenu] hierarchy -> %@%@ incoming=%d (%@)", sandboxPath, shared ? [NSString stringWithFormat:@" and %@", sharedPath] : @"", incoming, VLMCurrentBundleID());
 }
 
+static BOOL VLMViewLooksLikeSystemArrow(UIView *view, UIView *host) {
+    if (!view || view == host || [view isKindOfClass:[VLMSelectionAnchorView class]]) {
+        return NO;
+    }
+    if ([host isDescendantOfView:view]) {
+        return NO;
+    }
+    NSString *name = NSStringFromClass(view.class);
+    if ([name containsString:@"Page"]
+        || [name containsString:@"Collection"]
+        || [name containsString:@"Cell"]
+        || [name containsString:@"ScrollIndicator"]) {
+        return NO;
+    }
+    if (VLMNameLooksLikeArrow(view)) {
+        return YES;
+    }
+    CGSize size = view.bounds.size;
+    if (size.width < 6.0 || size.height < 4.0 || size.width > 40.0 || size.height > 24.0) {
+        return NO;
+    }
+    UIView *parent = host.superview;
+    if (!parent) {
+        return NO;
+    }
+    CGRect hostInParent = host.frame;
+    CGRect viewInParent = [parent convertRect:view.bounds fromView:view];
+    BOOL centered = fabs(CGRectGetMidX(viewInParent) - CGRectGetMidX(hostInParent)) < 90.0;
+    BOOL atTop = fabs(CGRectGetMaxY(viewInParent) - CGRectGetMinY(hostInParent)) < 18.0
+        || fabs(CGRectGetMidY(viewInParent) - CGRectGetMinY(hostInParent)) < 14.0;
+    BOOL atBottom = fabs(CGRectGetMinY(viewInParent) - CGRectGetMaxY(hostInParent)) < 18.0
+        || fabs(CGRectGetMidY(viewInParent) - CGRectGetMaxY(hostInParent)) < 14.0;
+    return centered && (atTop || atBottom);
+}
+
 static void VLMHideSystemArrowsNear(UIView *host) {
-    if (objc_getAssociatedObject(host, kVLMHidSystemArrowKey)) {
+    if (!host) {
         return;
     }
-    objc_setAssociatedObject(host, kVLMHidSystemArrowKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     static NSArray<NSString *> *keys;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        keys = @[@"_arrowView", @"arrowView", @"_pointerView", @"pointerView"];
+        keys = @[
+            @"_arrowView", @"arrowView",
+            @"_pointerView", @"pointerView",
+            @"_calloutArrowView", @"calloutArrowView",
+            @"_shapeView", @"shapeView",
+            @"_arrow", @"arrow",
+        ];
     });
+    UIView *kept = objc_getAssociatedObject(host, kVLMCustomArrowKey);
     UIView *current = host;
-    for (NSInteger depth = 0; current && depth < 4; depth++) {
+    for (NSInteger depth = 0; current && depth < 5; depth++) {
         for (NSString *key in keys) {
             @try {
                 id value = [current valueForKey:key];
-                if ([value isKindOfClass:[UIView class]] && ![value isKindOfClass:[VLMSelectionAnchorView class]]) {
+                if ([value isKindOfClass:[UIView class]] && value != kept) {
                     VLMHideView(value);
                 }
             } @catch (__unused NSException *exception) {
             }
+        }
+        @try {
+            [current setValue:@0 forKey:@"arrowDirection"];
+        } @catch (__unused NSException *exception) {
         }
         current = current.superview;
         if ([current isKindOfClass:[UIWindow class]]) {
             break;
         }
     }
-    UIView *found = VLMFindArrowNear(host);
-    if (found && ![found isKindOfClass:[VLMSelectionAnchorView class]]) {
-        VLMHideView(found);
+
+    UIView *root = host.superview ?: host;
+    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
+    for (NSUInteger index = 0; index < queue.count && index < 120; index++) {
+        UIView *view = queue[index];
+        if ([view isKindOfClass:[VLMSelectionAnchorView class]] && view != kept) {
+            [view removeFromSuperview];
+            continue;
+        }
+        if (VLMViewLooksLikeSystemArrow(view, host)) {
+            VLMHideView(view);
+        }
+        if (view == host) {
+            for (UIView *sub in view.subviews) {
+                if ([sub isKindOfClass:[UICollectionView class]] || [sub isKindOfClass:[UICollectionViewCell class]]) {
+                    continue;
+                }
+                [queue addObject:sub];
+            }
+            continue;
+        }
+        [queue addObjectsFromArray:view.subviews];
     }
 }
 
@@ -1591,6 +1749,11 @@ static UIView *VLMEnsureCustomArrow(UIView *host) {
     UIView *parent = host.superview;
     if (parent && arrow.superview != parent) {
         [parent addSubview:arrow];
+    }
+    for (UIView *sibling in [parent.subviews copy]) {
+        if ([sibling isKindOfClass:[VLMSelectionAnchorView class]] && sibling != arrow) {
+            [sibling removeFromSuperview];
+        }
     }
     arrow.layer.zPosition = host.layer.zPosition + 10.0;
     return arrow;
@@ -1607,7 +1770,7 @@ static void VLMPointArrowAtSelection(UIView *host, CGRect selection, BOOL below)
     }
 
     VLMHideSystemArrowsNear(host);
-    UIView *arrow = VLMEnsureCustomArrow(host);
+    VLMSelectionAnchorView *arrow = (VLMSelectionAnchorView *)VLMEnsureCustomArrow(host);
     if (!arrow || !arrow.superview) {
         return;
     }
@@ -1621,22 +1784,24 @@ static void VLMPointArrowAtSelection(UIView *host, CGRect selection, BOOL below)
         maxX = minX;
     }
     CGFloat x = MIN(MAX(targetX, minX), maxX);
-    CGPoint newCenter = below
-        ? CGPointMake(x, CGRectGetMinY(hostInParent) + 1.0)
-        : CGPointMake(x, CGRectGetMaxY(hostInParent) - 1.0);
-    CGAffineTransform newTransform = below ? CGAffineTransformIdentity : CGAffineTransformMakeScale(1.0, -1.0);
-    CGRect newBounds = CGRectMake(0, 0, kVLMArrowWidth, kVLMArrowHeight);
+    arrow.transform = CGAffineTransformIdentity;
+    arrow.bounds = CGRectMake(0, 0, kVLMArrowWidth, kVLMArrowHeight);
+    BOOL pointsUp = below;
+    CGFloat originY = below
+        ? (CGRectGetMinY(hostInParent) - kVLMArrowHeight + kVLMArrowOverlap)
+        : (CGRectGetMaxY(hostInParent) - kVLMArrowOverlap);
+    CGPoint newCenter = CGPointMake(x, originY + kVLMArrowHeight / 2.0);
     if (fabs(arrow.center.x - newCenter.x) < 0.5
         && fabs(arrow.center.y - newCenter.y) < 0.5
-        && CGAffineTransformEqualToTransform(arrow.transform, newTransform)
+        && arrow.pointsUp == pointsUp
         && !arrow.hidden) {
         return;
     }
-    arrow.bounds = newBounds;
-    arrow.transform = newTransform;
+    arrow.pointsUp = pointsUp;
     arrow.center = newCenter;
     arrow.hidden = NO;
     arrow.alpha = 1;
+    [arrow setNeedsDisplay];
     VLMLog(@"custom arrow x=%.1f below=%d selection=%@", x, below, NSStringFromCGRect(selection));
 }
 
@@ -2074,7 +2239,7 @@ static void VLMRefreshCollectionSortMap(id host, UICollectionView *collectionVie
         }
     }
     objc_setAssociatedObject(collectionView, kVLMCapturedTitlesKey, storedTitles, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    VLMRememberEditMenuFromHost(host, commands, records, records.count < count);
+    VLMRememberEditMenuFromHost(host, commands, records, NO);
 
     if (frozen) {
         objc_setAssociatedObject(collectionView, kVLMRefreshingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -3303,16 +3468,8 @@ static BOOL VLMIsInsideEditMenu(id view) {
 %end
 
 static void VLMRememberSuggestedEditActions(id menuOrNil, NSArray *suggested) {
-    NSArray *source = nil;
-    if ([menuOrNil isKindOfClass:[UIMenu class]]) {
-        source = ((UIMenu *)menuOrNil).children;
-    }
-    if (source.count < 2) {
-        source = suggested;
-    }
-    if (source.count >= 2) {
-        VLMRememberUIMenuElements(source, VLMMenuKindEdit);
-    }
+    (void)menuOrNil;
+    (void)suggested;
 }
 
 %group TextInputEditMenu
@@ -3345,17 +3502,6 @@ static void VLMRememberSuggestedEditActions(id menuOrNil, NSArray *suggested) {
 
 - (void)presentEditMenuWithConfiguration:(id)configuration {
     %orig;
-    NSArray *actions = nil;
-    @try {
-        id value = [configuration valueForKey:@"suggestedActions"];
-        if ([value isKindOfClass:[NSArray class]]) {
-            actions = value;
-        }
-    } @catch (__unused NSException *exception) {
-    }
-    if (actions.count >= 2) {
-        VLMRememberUIMenuElements(actions, VLMMenuKindEdit);
-    }
 }
 
 %end
@@ -3371,10 +3517,7 @@ static void VLMPrefsChanged(CFNotificationCenterRef center, void *observer, CFSt
 
 static void VLMIncomingPrefsChanged(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     NSString *bundle = [NSBundle mainBundle].bundleIdentifier ?: @"";
-    BOOL canIngest = [bundle isEqualToString:@"com.apple.springboard"]
-        || [bundle isEqualToString:@"com.apple.Preferences"]
-        || [bundle hasPrefix:@"com.apple.Preferences"];
-    if (!canIngest) {
+    if (![bundle isEqualToString:@"com.apple.springboard"]) {
         return;
     }
     VLMIngestIncomingPrefs();

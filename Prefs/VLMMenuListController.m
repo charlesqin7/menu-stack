@@ -62,7 +62,6 @@
 }
 
 - (void)reloadFromPrefs {
-    VLMIngestIncomingPrefs();
     NSDictionary *prefs = VLMReadPrefsDictionary();
     id raw = prefs[VLMMenuProfilesKey];
     _profiles = VLMSanitizeProfiles(raw);
@@ -89,7 +88,7 @@
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return @"每个 App 只显示两条：文本选择（拷贝粘贴条）和上下文菜单（长按后的动作列表）。列表按该 App 实际弹出过的项记录，不会写死某个按钮。某次弹出没有的项会被跳过。";
+    return @"每个 App 只显示两条：文本选择（拷贝粘贴条）和上下文菜单（长按后的动作列表）。只记录当时菜单条上真正出现的项，子菜单和示例脚本（例如 MD清单）不会再写进来。某次弹出没有的项会被跳过。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {

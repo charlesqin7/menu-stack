@@ -108,12 +108,21 @@ static NSArray<NSString *> *VLMIncomingPlistPaths(void) {
             [paths addObject:stable];
         }
     }
-    static const char *patterns[] = {
+    static const char *sharedPatterns[] = {
         "/var/tmp/com.qins.verticalmenu.incoming*.plist",
         "/tmp/com.qins.verticalmenu.incoming*.plist",
         "/var/jb/var/tmp/com.qins.verticalmenu.incoming*.plist",
         "/var/jb/Library/Application Support/VerticalMenu/inbox/*.plist",
         "/var/mobile/Library/VerticalMenu/inbox/*.plist",
+        NULL,
+    };
+    for (const char **pattern = sharedPatterns; *pattern; pattern++) {
+        VLMAddGlobMatches(paths, *pattern);
+    }
+    if (!VLMIsSpringBoardProcess()) {
+        return paths;
+    }
+    static const char *containerPatterns[] = {
         "/var/mobile/Containers/Data/Application/*/tmp/com.qins.verticalmenu.incoming.plist",
         "/var/mobile/Containers/Data/Application/*/tmp/VerticalMenu-incoming.plist",
         "/private/var/mobile/Containers/Data/Application/*/tmp/com.qins.verticalmenu.incoming.plist",
@@ -129,7 +138,7 @@ static NSArray<NSString *> *VLMIncomingPlistPaths(void) {
         "/private/var/mobile/Containers/Data/Application/*/Documents/VerticalMenu-incoming.plist",
         NULL,
     };
-    for (const char **pattern = patterns; *pattern; pattern++) {
+    for (const char **pattern = containerPatterns; *pattern; pattern++) {
         VLMAddGlobMatches(paths, *pattern);
     }
     return paths;
@@ -211,7 +220,7 @@ static NSArray<NSString *> *VLMAppDataContainerRoots(void) {
 }
 
 static NSArray<NSString *> *VLMIncomingPlistsInAppContainers(void) {
-    if (!VLMIsSpringBoardProcess() && !VLMCurrentProcessIsPreferences()) {
+    if (!VLMIsSpringBoardProcess()) {
         return @[];
     }
     VLMTryUnsandbox();
@@ -512,7 +521,7 @@ static CFDataRef VLMPrefsPortCallback(CFMessagePortRef port, SInt32 msgid, CFDat
 }
 
 void VLMStartIncomingObserverIfNeeded(void) {
-    if (!VLMIsSpringBoardProcess() && !VLMCurrentProcessIsPreferences()) {
+    if (!VLMIsSpringBoardProcess()) {
         return;
     }
     static dispatch_once_t onceToken;
@@ -710,7 +719,7 @@ void VLMIngestIncomingPrefs(void) {
     if (gApplyingRemotePrefs) {
         return;
     }
-    if (!VLMIsSpringBoardProcess() && !VLMCurrentProcessIsPreferences()) {
+    if (!VLMIsSpringBoardProcess()) {
         return;
     }
     VLMTryUnsandbox();
@@ -1189,6 +1198,55 @@ NSArray<NSString *> *VLMSanitizeHiddenIDs(id value) {
     return ids;
 }
 
+BOOL VLMIsCapturedJunkItem(NSString *title, NSString *itemID) {
+    NSString *ident = itemID ?: @"";
+    NSString *clean = [title stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    if ([ident isEqualToString:@"showHelp:"]
+        || [ident isEqualToString:@"custom:showHelp:"]
+        || [ident hasSuffix:@"showHelp:"]
+        || [ident isEqualToString:@"help:"]
+        || [ident hasPrefix:@"file:"]
+        || [ident containsString:@"orderFront"]) {
+        return YES;
+    }
+    if (clean.length == 0) {
+        return [ident localizedCaseInsensitiveContainsString:@"showHelp"];
+    }
+    unichar first = [clean characterAtIndex:0];
+    if (first == 0x300C || first == 0x300E || first == 0xFF5B || first == '{' || first == 0x3008) {
+        return YES;
+    }
+    static NSSet<NSString *> *exact;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        exact = [NSSet setWithObjects:
+                 @"MD清单", @"MD 清单",
+                 @"文件", @"窗口", @"帮助", @"显示", @"服务",
+                 @"以下均为示例作为参考", @"以下均为示例",
+                 @"脚本框架", @"｛脚本框架｝",
+                 @"JSBox",
+                 @"换行分割", @"中英排版", @"去除空格", @"反转文字",
+                 @"清理剪贴板中商店链接",
+                 nil];
+    });
+    if ([exact containsObject:clean]) {
+        return YES;
+    }
+    if ([clean containsString:@"以下均为示例"]
+        || [clean containsString:@"脚本框架"]
+        || [clean localizedCaseInsensitiveContainsString:@"jsbox"]
+        || [clean containsString:@"作为参考"]
+        || [clean containsString:@"可组合变量"]
+        || [clean containsString:@"所填即所得"]
+        || [clean containsString:@"执行后看看"]) {
+        return YES;
+    }
+    if ([clean hasSuffix:@":"] && [clean containsString:@"Help"]) {
+        return YES;
+    }
+    return NO;
+}
+
 static void VLMAppendKnownItem(NSMutableArray<NSDictionary *> *result, NSMutableSet<NSString *> *seen, id item) {
     NSString *itemID = nil;
     NSString *title = nil;
@@ -1200,6 +1258,9 @@ static void VLMAppendKnownItem(NSMutableArray<NSDictionary *> *result, NSMutable
         title = item;
     }
     if (itemID.length == 0 || [seen containsObject:itemID]) {
+        return;
+    }
+    if (VLMIsCapturedJunkItem(title, itemID)) {
         return;
     }
     [seen addObject:itemID];
@@ -1419,6 +1480,10 @@ BOOL VLMProfilesNeedRewrite(id raw) {
         NSString *bundle = profile[@"bundle"] ?: @"";
         NSString *expected = VLMProfileIDForMenu(kind, bundle, nil);
         if (![profile[@"id"] isEqualToString:expected]) {
+            return YES;
+        }
+        NSArray *rawItems = [profile[@"items"] isKindOfClass:[NSArray class]] ? profile[@"items"] : @[];
+        if (rawItems.count != VLMProfileItems(profile).count) {
             return YES;
         }
     }
