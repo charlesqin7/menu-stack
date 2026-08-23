@@ -25,7 +25,7 @@ static const CGFloat kVLMMenuWidth = 250.0;
 static const CGFloat kVLMRowHeight = 44.0;
 static const NSInteger kVLMVisibleRows = 5;
 static const CGFloat kVLMListInset = 16.0;
-static const CGFloat kVLMScreenInset = 8.0;
+static const CGFloat kVLMScreenInset = 16.0;
 static const CGFloat kVLMSelectionGap = 6.0;
 static const CGFloat kVLMIconSize = 22.0;
 static const CGFloat kVLMIconLeft = 16.0;
@@ -1128,7 +1128,7 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     if (!VLMFramesClose(collectionView.frame, targetFrame)) {
         collectionView.frame = targetFrame;
     }
-    if (fabs(collectionView.contentOffset.x) > 0.5) {
+    if (fabs(collectionView.contentOffset.x) > 0.01) {
         [collectionView setContentOffset:CGPointMake(0, collectionView.contentOffset.y) animated:NO];
     }
 
@@ -1742,6 +1742,15 @@ static BOOL VLMIsInsideEditMenu(id view) {
         offset.x = 0;
     }
     %orig(offset, animated);
+}
+
+- (void)setBounds:(CGRect)bounds {
+    if (VLMEditOn() && fabs(bounds.origin.x) > 0.01
+        && VLMIsInsideEditMenu(self)
+        && [self.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]]) {
+        bounds.origin.x = 0;
+    }
+    %orig(bounds);
 }
 
 - (void)setCollectionViewLayout:(UICollectionViewLayout *)layout animated:(BOOL)animated {

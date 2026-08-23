@@ -125,6 +125,10 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
 
+## 更新（1.0.27）
+
+- 编辑模式左边留白与复制模式对齐：横向偏移改为无条件归零（滚动的 setBounds 路径也拦住），菜单离屏幕边缘至少 16pt。
+
 ## 更新（1.0.26）
 
 - 修复左侧图标被裁半个：列表残留 22pt 的横向滚动偏移（原翻页留位），现在竖列表的横向偏移锁定为 0。
