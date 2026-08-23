@@ -58,6 +58,38 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
+			<string>菜单排序</string>
+			<key>footerText</key>
+			<string>打开后，弹出菜单按你设好的顺序排列。点「调整顺序」拖动项目时会自动打开此开关。改完后请注销或划掉正在用的 App。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>default</key>
+			<false/>
+			<key>defaults</key>
+			<string>com.qins.verticalmenu</string>
+			<key>key</key>
+			<string>CustomOrder</string>
+			<key>label</key>
+			<string>自定义排序</string>
+			<key>PostNotification</key>
+			<string>com.qins.verticalmenu/ReloadPrefs</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>detail</key>
+			<string>VLMOrderListController</string>
+			<key>isController</key>
+			<true/>
+			<key>label</key>
+			<string>调整顺序</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
 			<string>调试</string>
 			<key>footerText</key>
 			<string>打开后会在系统日志打印 [VerticalMenu] 前缀。用 Console.app 或 idevicesyslog 过滤即可。</string>

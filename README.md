@@ -64,9 +64,13 @@ layout/Library/PreferenceLoader/Preferences/
 - `Enabled`：总开关，默认开
 - `ContextMenus`：改 compact / palette 上下文菜单
 - `EditMenus`：改拷贝粘贴条
+- `CustomOrder`：按自定义顺序排列菜单项，默认关；在「调整顺序」里拖动后会自动打开
+- `MenuItemOrder`：菜单项 ID 数组，决定弹出顺序
 - `Debug`：NSLog 前缀 `[VerticalMenu]`
 
-改开关后点「注销 SpringBoard」，并且把目标 App 从多任务里划掉再开，注入才会进新进程。
+在设置里打开「调整顺序」，按住右边横条拖动剪切、拷贝、粘贴、全选等项目。当前菜单里没有的项会被跳过，没出现在列表里的项排在后面。
+
+改开关或排序后点「注销 SpringBoard」，并且把目标 App 从多任务里划掉再开，注入才会进新进程。
 
 ## 环境
 
@@ -92,7 +96,7 @@ make clean package FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
 
 生成的 deb 在 `packages/`。rootless / roothide 架构都是 `iphoneos-arm64`。
 
-把对应越狱环境的 deb 拷到手机，用 Sileo / Zebra / `dpkg -i` 安装，然后 respring。设置里的「纵向菜单」由 PreferenceLoader 直接打开，不依赖自定义 PreferenceBundle。
+把对应越狱环境的 deb 拷到手机，用 Sileo / Zebra / `dpkg -i` 安装，然后 respring。设置里的「纵向菜单」由 PreferenceLoader 打开 PreferenceBundle（`VerticalMenuPrefs`），里面可以开关功能并拖动调整菜单顺序。
 
 每次往 `main` 的 push 会跑 `.github/workflows/build.yml`：
 
@@ -105,7 +109,7 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 插件注入时**总会**打一条 `NSLog`，不依赖「调试日志」开关：
 
 ```
-[VerticalMenu] loaded in com.apple.mobilesafari enabled=1 context=1 edit=1 debug=0 list=1
+[VerticalMenu] loaded in com.apple.mobilesafari enabled=1 context=1 edit=1 debug=0 list=1 sort=1
 ```
 
 用 `idevicesyslog | grep VerticalMenu`（或设备上的系统日志）就能确认有没有进 Safari。打开「调试日志」后才会有 `sizeThatFits` 等细节。若复制菜单完全不出现，先在设置里关掉「文本选择菜单」，划掉 App 再试：横条应恢复，用来确认是不是这一层 hook 的问题。
@@ -115,6 +119,7 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 1. 备忘录或信息里长按一条内容：顶部那排并排小按钮应变成逐行列表。
 2. 任意输入框选中文字：拷贝菜单应为纵向列表，一次最多 5 项，其余可上下滑；靠近屏幕顶部选字时不应顶进状态栏。
 3. Safari 长按链接：若系统给了 palette / compact 行，应变纵向；本来就是竖列表的动作区保持竖列表。
+4. 设置里打开「自定义排序」，把「粘贴」拖到最上面：选中文字后弹出的菜单第一项应是粘贴。
 
 ## 没生效时怎么查
 
@@ -124,6 +129,10 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 2. 打开调试日志，完全杀掉 App 再开，看是否出现 `[VerticalMenu] loaded in <bundle id>`。没有日志就是没注入（ElleKit 过滤、未 respring、装到了错误的 scheme）。
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
+
+## 更新（1.0.29）
+
+- 设置里新增「自定义排序」：可拖动调整剪切、拷贝、粘贴、全选等菜单项的顺序，弹出菜单按这个顺序排列。
 
 ## 更新（1.0.28）
 

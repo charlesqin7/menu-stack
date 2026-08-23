@@ -14,7 +14,7 @@ include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = VerticalMenu
 
-VerticalMenu_FILES = Tweak.x
+VerticalMenu_FILES = Tweak.x VLMMenuOrder.m
 VerticalMenu_CFLAGS = -fobjc-arc -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter -Wno-incompatible-pointer-types
 VerticalMenu_FRAMEWORKS = UIKit Foundation CoreGraphics
 
