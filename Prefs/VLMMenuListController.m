@@ -55,7 +55,7 @@
 
 - (void)reloadFromPrefs {
     NSDictionary *prefs = VLMReadPrefsDictionary();
-    _profiles = [prefs[VLMMenuRegistryKey] isKindOfClass:[NSArray class]] ? prefs[VLMMenuRegistryKey] : @[];
+    _profiles = VLMSanitizeRegistryRecords(prefs[VLMMenuRegistryKey]);
     [self rebuildProfileDisplayCache];
     [_tableView reloadData];
 }

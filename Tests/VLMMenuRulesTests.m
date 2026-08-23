@@ -266,6 +266,30 @@ static void TestV2RegistryBounds(void) {
                    @"retains the most recently observed records when pruning");
 }
 
+static void TestV2RegistrySanitizing(void) {
+    NSArray *records = VLMSanitizeRegistryRecords(@[
+        @"legacy-string",
+        @42,
+        @[@"legacy-array"],
+        @{ @"id": @42, @"items": @[@"Copy"] },
+        @{
+            @"kind": VLMMenuKindEdit,
+            @"bundle": @"com.example.safe",
+            @"appName": @42,
+            @"items": @[
+                @"Copy",
+                @42,
+                @{ @"id": @"paste", @"title": @42 },
+            ],
+            @"seenAt": @"invalid-time",
+        },
+    ]);
+    VLMAssertEqual(@(records.count), @1, @"drops malformed registry records instead of exposing them to host apps");
+    NSDictionary *record = records.firstObject;
+    VLMAssertEqual(record[@"id"], @"edit|com.example.safe", @"rebuilds a canonical registry identifier");
+    VLMAssertEqual(@([VLMProfileItems(record) count]), @2, @"keeps only recoverable menu items");
+}
+
 static void TestMigration(void) {
     NSArray *profiles = VLMSanitizeProfiles(@[
         TestProfile(@"legacy-edit",
@@ -385,6 +409,7 @@ int main(void) {
         TestLegacyProfileMerge();
         TestV2RegistryUnion();
         TestV2RegistryBounds();
+        TestV2RegistrySanitizing();
         TestMigration();
         TestJunkFiltering();
         TestSafeFilteringAndSorting();
