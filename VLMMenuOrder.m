@@ -1,6 +1,7 @@
 #import "VLMMenuOrder.h"
 
 #import <dlfcn.h>
+#import <glob.h>
 #import <sys/stat.h>
 #import <unistd.h>
 
@@ -40,12 +41,42 @@ static BOOL VLMCurrentProcessIsPreferences(void) {
 }
 
 static NSArray<NSString *> *VLMIncomingDirectories(void) {
-    return @[
-        @"/var/tmp",
-        @"/tmp",
-        @"/var/jb/var/tmp",
-        @"/var/jb/tmp",
-    ];
+    NSMutableArray<NSString *> *dirs = [NSMutableArray array];
+    void (^add)(NSString *) = ^(NSString *path) {
+        if (path.length && ![dirs containsObject:path]) {
+            [dirs addObject:path];
+        }
+    };
+    add(NSTemporaryDirectory());
+    add([NSHomeDirectory() stringByAppendingPathComponent:@"tmp"]);
+    add([NSHomeDirectory() stringByAppendingPathComponent:@"Library/Preferences"]);
+    add(@"/var/tmp");
+    add(@"/tmp");
+    add(@"/var/jb/var/tmp");
+    add(@"/var/jb/tmp");
+    add(@"/var/jb/Library/Application Support/VerticalMenu/inbox");
+    add(@"/var/mobile/Library/VerticalMenu/inbox");
+#ifdef THEOS_PACKAGE_INSTALL_PREFIX
+    add(@(THEOS_PACKAGE_INSTALL_PREFIX "/Library/Application Support/VerticalMenu/inbox"));
+#endif
+    return dirs;
+}
+
+static void VLMAddGlobMatches(NSMutableArray<NSString *> *paths, const char *pattern) {
+    if (!pattern) {
+        return;
+    }
+    glob_t matches;
+    memset(&matches, 0, sizeof(matches));
+    if (glob(pattern, 0, NULL, &matches) == 0) {
+        for (size_t index = 0; index < matches.gl_pathc; index++) {
+            NSString *path = [NSString stringWithUTF8String:matches.gl_pathv[index]];
+            if (path.length > 0 && ![paths containsObject:path]) {
+                [paths addObject:path];
+            }
+        }
+    }
+    globfree(&matches);
 }
 
 static NSArray<NSString *> *VLMIncomingPlistPaths(void) {
@@ -54,10 +85,32 @@ static NSArray<NSString *> *VLMIncomingPlistPaths(void) {
     for (NSString *directory in VLMIncomingDirectories()) {
         NSArray<NSString *> *files = [fm contentsOfDirectoryAtPath:directory error:nil];
         for (NSString *file in files) {
-            if ([file hasPrefix:@"com.qins.verticalmenu.incoming"] && [file.pathExtension isEqualToString:@"plist"]) {
+            BOOL match = [file isEqualToString:@"com.qins.verticalmenu.incoming.plist"]
+                || [file isEqualToString:@"VerticalMenu-incoming.plist"]
+                || ([file hasPrefix:@"com.qins.verticalmenu.incoming"] && [file.pathExtension isEqualToString:@"plist"]);
+            if (match) {
                 [paths addObject:[directory stringByAppendingPathComponent:file]];
             }
         }
+        NSString *stable = [directory stringByAppendingPathComponent:@"com.qins.verticalmenu.incoming.plist"];
+        if ([fm fileExistsAtPath:stable] && ![paths containsObject:stable]) {
+            [paths addObject:stable];
+        }
+    }
+    static const char *patterns[] = {
+        "/var/tmp/com.qins.verticalmenu.incoming*.plist",
+        "/tmp/com.qins.verticalmenu.incoming*.plist",
+        "/var/jb/var/tmp/com.qins.verticalmenu.incoming*.plist",
+        "/var/jb/Library/Application Support/VerticalMenu/inbox/*.plist",
+        "/var/mobile/Containers/Data/Application/*/tmp/com.qins.verticalmenu.incoming.plist",
+        "/var/mobile/Containers/Data/Application/*/tmp/VerticalMenu-incoming.plist",
+        "/private/var/mobile/Containers/Data/Application/*/tmp/com.qins.verticalmenu.incoming.plist",
+        "/private/var/mobile/Containers/Data/Application/*/tmp/VerticalMenu-incoming.plist",
+        "/var/mobile/Containers/Data/Application/*/Library/Preferences/com.qins.verticalmenu.incoming.plist",
+        NULL,
+    };
+    for (const char **pattern = patterns; *pattern; pattern++) {
+        VLMAddGlobMatches(paths, *pattern);
     }
     return paths;
 }
@@ -321,6 +374,32 @@ static CFDataRef VLMPrefsPortCallback(CFMessagePortRef port, SInt32 msgid, CFDat
     return NULL;
 }
 
+void VLMStartIncomingObserverIfNeeded(void) {
+    if (!VLMIsSpringBoardProcess() && !VLMCurrentProcessIsPreferences()) {
+        return;
+    }
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        static id incomingObserver;
+        incomingObserver = [[NSDistributedNotificationCenter defaultCenter] addObserverForName:@"com.qins.verticalmenu.incoming"
+                                                                                       object:nil
+                                                                                        queue:[NSOperationQueue mainQueue]
+                                                                                   usingBlock:^(NSNotification *note) {
+            NSDictionary *updates = note.userInfo;
+            if (![updates isKindOfClass:[NSDictionary class]] || updates.count == 0) {
+                VLMIngestIncomingPrefs();
+                return;
+            }
+            gApplyingRemotePrefs = YES;
+            VLMWritePrefsValues(updates, YES);
+            gApplyingRemotePrefs = NO;
+            VLMIngestIncomingPrefs();
+        }];
+        (void)incomingObserver;
+        VLMIngestIncomingPrefs();
+    });
+}
+
 void VLMStartPrefsWriterIfNeeded(void) {
     if (!VLMIsSpringBoardProcess()) {
         return;
@@ -336,7 +415,7 @@ void VLMStartPrefsWriterIfNeeded(void) {
         if (port) {
             CFMessagePortSetDispatchQueue(port, dispatch_get_main_queue());
         }
-        VLMIngestIncomingPrefs();
+        VLMStartIncomingObserverIfNeeded();
     });
 }
 
@@ -373,25 +452,43 @@ static BOOL VLMDropIncomingPrefs(NSDictionary<NSString *, id> *changes) {
     if (!data) {
         return NO;
     }
-    NSString *name = [NSString stringWithFormat:@"com.qins.verticalmenu.incoming-%.0f-%d.plist",
-                      [[NSDate date] timeIntervalSince1970] * 1000.0, getpid()];
     BOOL wrote = NO;
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSArray<NSString *> *names = @[
+        @"com.qins.verticalmenu.incoming.plist",
+        @"VerticalMenu-incoming.plist",
+    ];
     for (NSString *directory in VLMIncomingDirectories()) {
-        NSString *path = [directory stringByAppendingPathComponent:name];
-        if ([data writeToFile:path atomically:YES]) {
-            chmod(path.fileSystemRepresentation, 0666);
-            wrote = YES;
+        BOOL isDirectory = NO;
+        if (![fm fileExistsAtPath:directory isDirectory:&isDirectory] || !isDirectory) {
+            [fm createDirectoryAtPath:directory withIntermediateDirectories:YES attributes:@{
+                NSFilePosixPermissions: @0777
+            } error:nil];
+        }
+        for (NSString *name in names) {
+            NSString *path = [directory stringByAppendingPathComponent:name];
+            if ([data writeToFile:path atomically:YES]) {
+                chmod(path.fileSystemRepresentation, 0666);
+                wrote = YES;
+            }
         }
     }
-    if (wrote) {
-        CFNotificationCenterPostNotification(
-            CFNotificationCenterGetDarwinNotifyCenter(),
-            (__bridge CFStringRef)VLMIncomingNotificationName,
-            NULL,
-            NULL,
-            true
-        );
+    @try {
+        [[NSDistributedNotificationCenter defaultCenter] postNotificationName:@"com.qins.verticalmenu.incoming"
+                                                                       object:VLMCurrentBundleID()
+                                                                     userInfo:changes
+                                                           deliverImmediately:YES];
+    } @catch (__unused NSException *exception) {
     }
+    CFNotificationCenterPostNotification(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        (__bridge CFStringRef)VLMIncomingNotificationName,
+        NULL,
+        NULL,
+        true
+    );
+    NSLog(@"[VerticalMenu] prefs drop sandbox=%d tmp=%@ bundle=%@",
+          wrote, NSTemporaryDirectory(), VLMCurrentBundleID());
     return wrote;
 }
 

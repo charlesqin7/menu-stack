@@ -24,3 +24,7 @@ include $(THEOS_MAKE_PATH)/aggregate.mk
 
 after-install::
 	install.exec "sbreload || killall -9 SpringBoard"
+
+after-stage::
+	$(ECHO_NOTHING)mkdir -p "$(THEOS_STAGING_DIR)$(THEOS_PACKAGE_INSTALL_PREFIX)/Library/Application Support/VerticalMenu/inbox"$(ECHO_END)
+	$(ECHO_NOTHING)chmod 0777 "$(THEOS_STAGING_DIR)$(THEOS_PACKAGE_INSTALL_PREFIX)/Library/Application Support/VerticalMenu/inbox"$(ECHO_END)

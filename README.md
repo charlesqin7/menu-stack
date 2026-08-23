@@ -131,6 +131,11 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
 
+## 更新（1.0.42）
+
+- X 仍不出现在设置里：日志证明采集成功，但记录只写在 X 自己的 tmp，设置读不到。改为写进 App 沙盒 tmp（已验证可写），SpringBoard 再按容器扫描合并；同时用分布式通知把菜单列表发给 SpringBoard。
+- 滑动后右边灰条：系统在 collection 滚动时把约 347pt 的毛玻璃加回来，而列表自己此时不会 layout。改为滚动时钉住托盘宽度并裁掉翻页按钮。
+
 ## 更新（1.0.41）
 
 - X 选字后设置里仍没有：第三方 App 经常写不进全局配置。改为把记录丢到 `/var/tmp`，SpringBoard 和设置页会合并进来；读取时按菜单逐条合并，不会用一份新记录盖掉其它 App。
