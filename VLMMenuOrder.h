@@ -10,6 +10,7 @@ extern NSString * const VLMKnownItemsKey;
 extern NSString * const VLMHiddenItemsKey;
 extern NSString * const VLMPrefsStampKey;
 extern NSString * const VLMMenuProfilesKey;
+extern NSString * const VLMGlobalRulesKey;
 extern NSString * const VLMMenuKindEdit;
 extern NSString * const VLMMenuKindContext;
 extern NSString * const VLMIncomingNotificationName;
@@ -21,6 +22,21 @@ void VLMStartPrefsWriterIfNeeded(void);
 void VLMStartIncomingObserverIfNeeded(void);
 void VLMIngestIncomingPrefs(void);
 BOOL VLMWriteIncomingSnapshot(NSDictionary<NSString *, id> *changes);
+void VLMMigrateToGlobalRulesIfNeeded(void);
+
+NSDictionary *_Nullable VLMGlobalRuleForKind(NSString *_Nullable kind);
+NSArray<NSDictionary *> *VLMGlobalRuleItems(NSString *_Nullable kind);
+NSArray<NSString *> *VLMGlobalOrderIDs(NSString *_Nullable kind);
+NSArray<NSString *> *VLMGlobalHiddenIDs(NSString *_Nullable kind);
+BOOL VLMGlobalCustomOrder(NSString *_Nullable kind);
+NSArray<NSString *> *VLMEffectiveOrderIDs(NSString *_Nullable kind, NSDictionary *_Nullable profile);
+NSArray<NSString *> *VLMEffectiveHiddenIDs(NSString *_Nullable kind, NSDictionary *_Nullable profile);
+BOOL VLMEffectiveCustomOrder(NSString *_Nullable kind, NSDictionary *_Nullable profile);
+void VLMWriteGlobalRule(NSString *_Nullable kind,
+                        NSArray<NSString *> *_Nullable order,
+                        NSArray<NSString *> *_Nullable hidden,
+                        NSArray<NSDictionary *> *_Nullable items,
+                        BOOL customOrder);
 
 NSArray<NSDictionary *> *VLMCatalogItems(void);
 NSArray<NSString *> *VLMCoreOrderIDs(void);

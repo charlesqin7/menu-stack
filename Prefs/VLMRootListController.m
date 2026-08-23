@@ -8,7 +8,7 @@
 extern char **environ;
 
 #ifndef VLM_VERSION
-#define VLM_VERSION "1.0.45"
+#define VLM_VERSION "1.0.46"
 #endif
 
 @interface VLMMenuListController : UIViewController
@@ -35,7 +35,7 @@ extern char **environ;
 + (void)load {
     (void)[VLMMenuListController class];
     (void)[VLMOrderListController class];
-    VLMStartIncomingObserverIfNeeded();
+    VLMMigrateToGlobalRulesIfNeeded();
 }
 
 - (NSArray *)specifiers {

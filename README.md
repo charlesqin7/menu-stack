@@ -64,12 +64,12 @@ layout/Library/PreferenceLoader/Preferences/
 - `Enabled`：总开关，默认开
 - `ContextMenus`：改 compact / palette 上下文菜单
 - `EditMenus`：改拷贝粘贴条
-- `CustomOrder`：已改为按每个菜单单独记录；只有拖过顺序的那个菜单才会按自定义顺序排
-- `MenuItemOrder` / `HiddenMenuItems`：旧版全局列表，仅作尚未记录过的菜单的隐藏回退
-- `MenuProfiles`：每个 App 各两条（文本选择 / 上下文菜单），里面是出现过的项、顺序和隐藏列表
+- `CustomOrder` / `MenuItemOrder` / `HiddenMenuItems`：旧版全局列表，升级后并入 `GlobalRules`
+- `GlobalRules`：文本选择 / 上下文菜单各一份全局顺序与隐藏，对所有 App 生效
+- `MenuProfiles`：每个 App 最近一次弹出的项，以及只对这个 App 多藏的项（可选覆盖顺序）
 - `Debug`：NSLog 前缀 `[VerticalMenu]`
 
-在设置里打开「按菜单设置顺序与隐藏」。先在对应 App 里弹出一次菜单，列表里就会出现「备忘录 · 文本选择」「Safari · 文本选择」等条目。系统里那些看起来重复的组合会合并成这两条。每个 App 的隐藏和顺序互不影响。关掉某项即可隐藏，不必打开自定义排序。
+在设置里先改「文本选择 · 全局」和「上下文菜单 · 全局」。某个 App 还要多藏几项，或只改这个 App 的顺序时，打开「按 App 例外」。先在对应 App 里弹出一次菜单，列表里才会出现该 App。全局已经隐藏的项不能在某个 App 里再打开。
 
 改开关或排序后点「注销 SpringBoard」，并且把目标 App 从多任务里划掉再开，注入才会进新进程。
 
@@ -120,7 +120,7 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 1. 备忘录或信息里长按一条内容：顶部那排并排小按钮应变成逐行列表。
 2. 任意输入框选中文字：拷贝菜单应为纵向列表，一次最多 5 项，其余可上下滑；靠近屏幕顶部选字时不应顶进状态栏。
 3. Safari 长按链接：若系统给了 palette / compact 行，应变纵向；本来就是竖列表的动作区保持竖列表。
-4. 设置里打开「自定义排序」，把「粘贴」拖到最上面：选中文字后弹出的菜单第一项应是粘贴。
+4. 设置里打开「文本选择 · 全局」，把「粘贴」拖到最上面：各 App 选中文字后弹出的菜单第一项应是粘贴。
 
 ## 没生效时怎么查
 
@@ -130,6 +130,13 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 2. 打开调试日志，完全杀掉 App 再开，看是否出现 `[VerticalMenu] loaded in <bundle id>`。没有日志就是没注入（ElleKit 过滤、未 respring、装到了错误的 scheme）。
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
+
+## 更新（1.0.46）
+
+- 到处都卡：每个 UIKit 进程在读设置时都会把清洗后的 `MenuProfiles` 写回磁盘，Darwin 通知再让所有进程重读，形成写盘风暴。改为读设置只读；SpringBoard 收 Incoming 放到后台队列并合并 0.4 秒；层级日志不再写 Incoming。
+- 自己画的指示器太丑：不再藏系统箭头、不再画自定义三角，也不再 `clipsToBounds` 裁掉托盘外面的指针。只把 `arrowDirection` / `preferredArrowDirection` 设成朝向选区，钳位后按类名把系统箭头贴回托盘边。毛玻璃的 `effect` 保留，只裁 collection。
+- 选项前面的图标时有时无：不透明遮罩盖住原生 22×22 `UIImageView`，第一次 layout 还没有 `image` 时又把遮罩冻住。改为每次 layout 都把原生图标和标题挪到纵向位置；标题已经出现、下一拍仍没有原生图时才用省略号兜底。
+- 按 App 分别设置不够用：顺序和隐藏改成全局两份（文本选择 / 上下文菜单），App 只记最近一次弹出的项，并可额外多藏或覆盖顺序。全局隐藏不能在某个 App 里打开。
 
 ## 更新（1.0.45）
 

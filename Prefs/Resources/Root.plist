@@ -58,9 +58,45 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>按菜单设置</string>
+			<string>全局顺序与隐藏</string>
 			<key>footerText</key>
-			<string>隐藏不必打开自定义排序。每个 App 只保留「文本选择」和「上下文菜单」两条。列表按实际弹出过的项记录，不预置某个 App 的特殊按钮。</string>
+			<string>文本选择和上下文菜单各一份，对所有 App 生效。某次弹出没有的项会被跳过。某个 App 还要多藏几项时，用下面的「按 App 例外」。</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>detail</key>
+			<string>VLMOrderListController</string>
+			<key>isController</key>
+			<true/>
+			<key>key</key>
+			<string>GlobalEdit</string>
+			<key>id</key>
+			<string>GlobalEdit</string>
+			<key>label</key>
+			<string>文本选择 · 全局</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSLinkCell</string>
+			<key>detail</key>
+			<string>VLMOrderListController</string>
+			<key>isController</key>
+			<true/>
+			<key>key</key>
+			<string>GlobalContext</string>
+			<key>id</key>
+			<string>GlobalContext</string>
+			<key>label</key>
+			<string>上下文菜单 · 全局</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>按 App 例外</string>
+			<key>footerText</key>
+			<string>只记录最近一次弹出时菜单条上真正出现的项。全局已经隐藏的项，不能在某个 App 里再打开。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -70,7 +106,7 @@
 			<key>isController</key>
 			<true/>
 			<key>label</key>
-			<string>按菜单设置顺序与隐藏</string>
+			<string>按 App 例外</string>
 		</dict>
 		<dict>
 			<key>cell</key>

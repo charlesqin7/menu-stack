@@ -51,6 +51,12 @@ static BOOL gEditMenus = YES;
 static BOOL gDebug = NO;
 static NSArray<NSDictionary *> *gProfiles;
 static NSSet<NSString *> *gLegacyHidden;
+static NSArray<NSString *> *gGlobalEditOrder;
+static NSArray<NSString *> *gGlobalContextOrder;
+static NSSet<NSString *> *gGlobalEditHidden;
+static NSSet<NSString *> *gGlobalContextHidden;
+static BOOL gGlobalEditCustom = NO;
+static BOOL gGlobalContextCustom = NO;
 static NSInteger gVLMReadingOriginalMenu = 0;
 
 #define VLMLog(fmt, ...) do { \
@@ -70,20 +76,21 @@ static BOOL VLMBool(NSDictionary *dict, NSString *key, BOOL fallback) {
 }
 
 static void VLMLoadPrefs(void) {
-    static BOOL persistingProfiles;
     NSDictionary *dict = VLMPrefsDictionary();
     gEnabled = VLMBool(dict, @"Enabled", YES);
     gContextMenus = VLMBool(dict, @"ContextMenus", YES);
     gEditMenus = VLMBool(dict, @"EditMenus", YES);
     gDebug = VLMBool(dict, @"Debug", NO);
-    id rawProfiles = dict[VLMMenuProfilesKey];
-    gProfiles = [VLMSanitizeProfiles(rawProfiles) copy];
+    gProfiles = [VLMSanitizeProfiles(dict[VLMMenuProfilesKey]) copy];
     gLegacyHidden = [NSSet setWithArray:VLMSanitizeHiddenIDs(dict[VLMHiddenItemsKey])];
-    if (!persistingProfiles && VLMProfilesNeedRewrite(rawProfiles)) {
-        persistingProfiles = YES;
-        VLMWritePrefsValues(@{VLMMenuProfilesKey: gProfiles ?: @[]}, YES);
-        persistingProfiles = NO;
-    }
+    NSDictionary *editRule = VLMGlobalRuleForKind(VLMMenuKindEdit);
+    NSDictionary *contextRule = VLMGlobalRuleForKind(VLMMenuKindContext);
+    gGlobalEditOrder = [editRule[@"order"] copy] ?: @[];
+    gGlobalContextOrder = [contextRule[@"order"] copy] ?: @[];
+    gGlobalEditHidden = [NSSet setWithArray:editRule[@"hidden"] ?: @[]];
+    gGlobalContextHidden = [NSSet setWithArray:contextRule[@"hidden"] ?: @[]];
+    gGlobalEditCustom = [editRule[@"customOrder"] boolValue];
+    gGlobalContextCustom = [contextRule[@"customOrder"] boolValue];
 }
 
 static BOOL VLMContextOn(void) {
@@ -456,11 +463,39 @@ static NSDictionary *VLMProfileForKind(NSString *kind) {
     return VLMProfileWithID(gProfiles, VLMProfileIDForMenu(kind, VLMCurrentBundleID(), nil));
 }
 
-static NSSet<NSString *> *VLMHiddenSetForProfile(NSDictionary *profile) {
-    if (profile) {
-        return [NSSet setWithArray:VLMProfileHiddenIDs(profile)];
+static NSArray<NSString *> *VLMCachedGlobalOrder(NSString *kind) {
+    return [kind isEqualToString:VLMMenuKindContext] ? (gGlobalContextOrder ?: @[]) : (gGlobalEditOrder ?: @[]);
+}
+
+static NSSet<NSString *> *VLMCachedGlobalHidden(NSString *kind) {
+    return [kind isEqualToString:VLMMenuKindContext] ? (gGlobalContextHidden ?: [NSSet set]) : (gGlobalEditHidden ?: [NSSet set]);
+}
+
+static NSSet<NSString *> *VLMEffectiveHiddenSet(NSString *kind, NSDictionary *profile) {
+    NSMutableSet<NSString *> *hidden = [NSMutableSet set];
+    [hidden unionSet:VLMCachedGlobalHidden(kind)];
+    if (gLegacyHidden.count > 0) {
+        [hidden unionSet:gLegacyHidden];
     }
-    return gLegacyHidden;
+    [hidden addObjectsFromArray:VLMProfileHiddenIDs(profile)];
+    return hidden;
+}
+
+static BOOL VLMUsesCustomOrder(NSString *kind, NSDictionary *profile) {
+    if (VLMProfileCustomOrder(profile)) {
+        return YES;
+    }
+    return [kind isEqualToString:VLMMenuKindContext] ? gGlobalContextCustom : gGlobalEditCustom;
+}
+
+static NSArray<NSString *> *VLMEffectiveOrder(NSString *kind, NSDictionary *profile) {
+    if (VLMProfileCustomOrder(profile)) {
+        NSArray<NSString *> *order = VLMProfileDisplayOrder(profile);
+        if (order.count > 0) {
+            return order;
+        }
+    }
+    return VLMCachedGlobalOrder(kind);
 }
 
 static NSArray *VLMFilteredElements(NSArray *elements, NSSet<NSString *> *hidden) {
@@ -528,10 +563,10 @@ static NSArray *VLMRewrittenElementsForKind(NSArray *elements, NSString *kind) {
     }
     NSArray *working = flatten ? VLMExpandedMenuElements(elements, NO) : elements;
     NSDictionary *profile = VLMProfileForKind(kind);
-    NSSet<NSString *> *hidden = VLMHiddenSetForProfile(profile);
+    NSSet<NSString *> *hidden = VLMEffectiveHiddenSet(kind, profile);
     NSArray *filtered = VLMFilteredElements(working, hidden);
-    if (profile && VLMProfileCustomOrder(profile)) {
-        return VLMSortedElements(filtered, VLMProfileDisplayOrder(profile));
+    if (VLMUsesCustomOrder(kind, profile)) {
+        return VLMSortedElements(filtered, VLMEffectiveOrder(kind, profile));
     }
     return filtered;
 }
@@ -560,20 +595,13 @@ static void VLMRememberMenuProfile(NSString *kind, NSArray<NSDictionary *> *item
     }
     NSDictionary *existing = VLMProfileForKind(kind);
     if (existing) {
-        NSMutableSet<NSString *> *have = [NSMutableSet set];
+        NSMutableArray<NSString *> *have = [NSMutableArray array];
         for (NSDictionary *item in VLMProfileItems(existing)) {
             if (item[@"id"]) {
                 [have addObject:item[@"id"]];
             }
         }
-        BOOL hasNew = NO;
-        for (NSString *itemID in ids) {
-            if (![have containsObject:itemID]) {
-                hasNew = YES;
-                break;
-            }
-        }
-        if (!hasNew) {
+        if ([have isEqualToArray:ids]) {
             return;
         }
     }
@@ -584,24 +612,21 @@ static void VLMRememberMenuProfile(NSString *kind, NSArray<NSDictionary *> *item
         VLMGuessAppName(VLMCurrentBundleID()),
         items,
         existing,
-        gLegacyHidden.allObjects
+        nil
     );
     if (!built) {
         return;
     }
     NSArray *updated = VLMUpsertProfile(gProfiles, built);
     gProfiles = [updated copy];
-    NSDictionary *payload = @{
-        VLMMenuProfilesKey: updated,
-        VLMPrefsStampKey: @((NSTimeInterval)[[NSDate date] timeIntervalSince1970]),
-    };
-    VLMWriteIncomingSnapshot(payload);
     static BOOL scheduledWrite = NO;
     if (scheduledWrite) {
         return;
     }
     scheduledWrite = YES;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.4 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(),
+                   ^{
         scheduledWrite = NO;
         VLMWritePrefsValues(@{VLMMenuProfilesKey: gProfiles ?: @[]}, YES);
     });
@@ -812,11 +837,9 @@ static const void *kVLMGrowDownKey = &kVLMGrowDownKey;
 static const void *kVLMFallbackIconKey = &kVLMFallbackIconKey;
 static const void *kVLMTitleSlotKey = &kVLMTitleSlotKey;
 static const void *kVLMCoverKey = &kVLMCoverKey;
-static const void *kVLMTitleOverlayActiveKey = &kVLMTitleOverlayActiveKey;
-static const void *kVLMCustomArrowKey = &kVLMCustomArrowKey;
+static const void *kVLMHadTitleKey = &kVLMHadTitleKey;
 static const void *kVLMContainerGuardKey = &kVLMContainerGuardKey;
 static const void *kVLMCellGuardKey = &kVLMCellGuardKey;
-static const void *kVLMArrowScheduledKey = &kVLMArrowScheduledKey;
 static const void *kVLMChromeMaskKey = &kVLMChromeMaskKey;
 static const void *kVLMStrippedButtonKey = &kVLMStrippedButtonKey;
 static const void *kVLMCapturedTitleKey = &kVLMCapturedTitleKey;
@@ -845,13 +868,11 @@ static void VLMDisableConstraints(UIView *view);
 static BOOL VLMImageIsUsableIcon(UIImage *image);
 static UIColor *VLMMenuBackgroundColor(void);
 static CGRect VLMSelectionRectInWindow(UIWindow *window);
-static void VLMRefreshArrow(UIView *host);
-static void VLMScheduleArrow(UIView *host);
-static void VLMHideSystemArrowsNear(UIView *host);
+static void VLMSetSystemArrowDirection(UIView *host, BOOL below);
+static void VLMAttachSystemArrows(UIView *host, BOOL below);
 static void VLMConcealStaleChrome(UIView *host);
 static void VLMHideStrayBackdrops(UIView *host);
 static void VLMRepairEditMenuChrome(UIView *host);
-static void VLMScheduleChromeRepair(UIView *host);
 static CGRect VLMClampFrameInSuperview(UIView *view, CGRect frame);
 static BOOL VLMCollectionViewIsScrolling(UIScrollView *scrollView);
 
@@ -939,15 +960,15 @@ static void VLMHidePagingControls(id host) {
 }
 
 static void VLMUnclipAncestors(UIView *view) {
-    view.clipsToBounds = YES;
-    view.layer.cornerRadius = 14.0;
-    view.layer.masksToBounds = YES;
+    view.clipsToBounds = NO;
+    view.layer.masksToBounds = NO;
     UIView *current = view.superview;
     for (NSInteger depth = 0; current && depth < 6; depth++) {
         if ([current isKindOfClass:[UIWindow class]]) {
             break;
         }
         current.clipsToBounds = NO;
+        current.layer.masksToBounds = NO;
         current = current.superview;
     }
 }
@@ -1007,76 +1028,21 @@ static BOOL VLMIsOnScreen(UIView *view) {
     return CGRectIntersectsRect(onScreen, window.bounds);
 }
 
-@interface VLMSelectionAnchorView : UIView
-@property (nonatomic, assign) BOOL pointsUp;
-@end
-
-@implementation VLMSelectionAnchorView
-
-- (instancetype)initWithFrame:(CGRect)frame {
-    self = [super initWithFrame:frame];
-    if (self) {
-        _pointsUp = YES;
-        self.opaque = NO;
-        self.backgroundColor = [UIColor clearColor];
-        self.userInteractionEnabled = NO;
-        self.contentMode = UIViewContentModeRedraw;
-        self.clipsToBounds = NO;
-        self.layer.masksToBounds = NO;
-    }
-    return self;
-}
-
-- (void)traitCollectionDidChange:(UITraitCollection *)previousTraitCollection {
-    [super traitCollectionDidChange:previousTraitCollection];
-    [self setNeedsDisplay];
-}
-
-- (void)drawRect:(CGRect)rect {
-    UIColor *fill = VLMMenuBackgroundColor();
-    if (@available(iOS 13.0, *)) {
-        fill = [fill resolvedColorWithTraitCollection:self.traitCollection];
-    }
-    CGFloat width = CGRectGetWidth(rect);
-    CGFloat height = CGRectGetHeight(rect);
-    CGFloat tipR = 1.15;
-    UIBezierPath *path = [UIBezierPath bezierPath];
-    if (self.pointsUp) {
-        CGPoint tip = CGPointMake(width / 2.0, 0.35);
-        [path moveToPoint:CGPointMake(0.2, height)];
-        [path addLineToPoint:CGPointMake(tip.x - tipR, tip.y + tipR)];
-        [path addQuadCurveToPoint:CGPointMake(tip.x + tipR, tip.y + tipR) controlPoint:tip];
-        [path addLineToPoint:CGPointMake(width - 0.2, height)];
-        [path closePath];
-    } else {
-        CGPoint tip = CGPointMake(width / 2.0, height - 0.35);
-        [path moveToPoint:CGPointMake(0.2, 0.0)];
-        [path addLineToPoint:CGPointMake(width - 0.2, 0.0)];
-        [path addLineToPoint:CGPointMake(tip.x + tipR, tip.y - tipR)];
-        [path addQuadCurveToPoint:CGPointMake(tip.x - tipR, tip.y - tipR) controlPoint:tip];
-        [path closePath];
-    }
-    [fill setFill];
-    [path fill];
-}
-
-@end
-
 static BOOL VLMNameLooksLikeArrow(UIView *view) {
-    if ([view isKindOfClass:[VLMSelectionAnchorView class]]) {
-        return NO;
-    }
     NSString *name = NSStringFromClass(view.class);
-    if ([name containsString:@"Page"] || [name containsString:@"Collection"] || [name containsString:@"Cell"]) {
+    if ([name containsString:@"Page"]
+        || [name containsString:@"Collection"]
+        || [name containsString:@"Cell"]
+        || [name containsString:@"Image"]
+        || [name containsString:@"Label"]
+        || [name containsString:@"Button"]) {
         return NO;
     }
     return [name containsString:@"Arrow"]
         || [name containsString:@"Pointer"]
-        || [name containsString:@"Callout"]
         || [name containsString:@"Beak"]
         || [name containsString:@"PopoverShape"]
-        || [name containsString:@"MenuPointer"]
-        || [name containsString:@"Anchor"];
+        || [name containsString:@"MenuPointer"];
 }
 
 static UIView *VLMFindArrowNear(UIView *host) {
@@ -1447,7 +1413,6 @@ static void VLMHideStrayBackdrops(UIView *host) {
         for (UIView *sub in [current.subviews copy]) {
             if (sub == host
                 || [host isDescendantOfView:sub]
-                || [sub isKindOfClass:[VLMSelectionAnchorView class]]
                 || VLMNameLooksLikeArrow(sub)
                 || [sub isKindOfClass:[UICollectionView class]]) {
                 continue;
@@ -1471,56 +1436,32 @@ static void VLMHideStrayBackdrops(UIView *host) {
     }
 }
 
-static void VLMKillSystemBackdrop(UIView *view, NSInteger depth) {
-    if (!view || depth < 0) {
-        return;
-    }
-    if ([view isKindOfClass:[UICollectionView class]] || [view isKindOfClass:[UICollectionViewCell class]]) {
-        return;
-    }
-    NSString *name = NSStringFromClass(view.class);
-    if ([name containsString:@"PageButton"]
-        || [name containsString:@"PageControl"]
-        || [name containsString:@"Shadow"]
-        || [name containsString:@"Dimming"]
-        || [name containsString:@"Cutout"]
-        || [name containsString:@"Backdrop"]) {
-        VLMHideView(view);
-        view.layer.hidden = YES;
-        return;
-    }
-    if ([view isKindOfClass:[UIVisualEffectView class]]) {
-        UIVisualEffectView *effectView = (UIVisualEffectView *)view;
-        if (effectView.maskView) {
-            effectView.maskView = nil;
-        }
-        if (effectView.effect) {
-            effectView.effect = nil;
-        }
-        effectView.clipsToBounds = YES;
-        effectView.layer.cornerRadius = 14.0;
-        effectView.layer.masksToBounds = YES;
-        effectView.backgroundColor = [UIColor clearColor];
-    }
-    for (UIView *sub in view.subviews) {
-        VLMKillSystemBackdrop(sub, depth - 1);
-    }
-}
-
 static void VLMFitSystemPlatterToHost(UIView *host) {
     if (!host) {
         return;
     }
     for (UIView *sub in host.subviews) {
-        if (![sub isKindOfClass:[UIVisualEffectView class]]) {
-            NSString *name = NSStringFromClass(sub.class);
-            if ([name containsString:@"Shadow"] || [name containsString:@"PageButton"]) {
-                VLMHideView(sub);
-            }
+        NSString *name = NSStringFromClass(sub.class);
+        if ([name containsString:@"Shadow"]
+            || [name containsString:@"PageButton"]
+            || [name containsString:@"PageControl"]
+            || [name containsString:@"Dimming"]
+            || [name containsString:@"Cutout"]) {
+            VLMHideView(sub);
             continue;
         }
-        if (sub.bounds.size.width >= 8.0 && sub.bounds.size.height >= 8.0) {
+        BOOL platter = [sub isKindOfClass:[UIVisualEffectView class]]
+            || [name containsString:@"Backdrop"]
+            || [name containsString:@"Platter"]
+            || [name containsString:@"Material"];
+        if (!platter) {
             continue;
+        }
+        if ([sub isKindOfClass:[UIVisualEffectView class]]) {
+            UIVisualEffectView *effectView = (UIVisualEffectView *)sub;
+            if (effectView.maskView) {
+                effectView.maskView = nil;
+            }
         }
         VLMDisableConstraints(sub);
         sub.clipsToBounds = YES;
@@ -1532,39 +1473,73 @@ static void VLMFitSystemPlatterToHost(UIView *host) {
     }
 }
 
+static void VLMSetSystemArrowDirection(UIView *host, BOOL below) {
+    if (!host) {
+        return;
+    }
+    // UIEditMenuArrowDirection: 0 automatic, 1 up (arrow on top), 2 down (arrow on bottom).
+    NSInteger direction = below ? 1 : 2;
+    SEL setArrow = NSSelectorFromString(@"setArrowDirection:");
+    SEL setPreferred = NSSelectorFromString(@"setPreferredArrowDirection:");
+    UIView *current = host;
+    for (NSInteger depth = 0; current && depth < 5; depth++) {
+        if ([current respondsToSelector:setArrow]) {
+            ((void (*)(id, SEL, NSInteger))objc_msgSend)(current, setArrow, direction);
+        }
+        if ([current respondsToSelector:setPreferred]) {
+            ((void (*)(id, SEL, NSInteger))objc_msgSend)(current, setPreferred, direction);
+        }
+        current = current.superview;
+        if ([current isKindOfClass:[UIWindow class]]) {
+            break;
+        }
+    }
+}
+
+static void VLMAttachSystemArrows(UIView *host, BOOL below) {
+    UIView *parent = host.superview;
+    if (!parent || !host.window) {
+        return;
+    }
+    CGRect hostFrame = host.frame;
+    CGRect selection = VLMSelectionRectInWindow(host.window);
+    CGFloat targetX = CGRectGetMidX(hostFrame);
+    if (!CGRectIsNull(selection)) {
+        targetX = CGRectGetMidX([parent convertRect:selection fromView:host.window]);
+    }
+    CGFloat minX = CGRectGetMinX(hostFrame) + 18.0;
+    CGFloat maxX = CGRectGetMaxX(hostFrame) - 18.0;
+    if (maxX < minX) {
+        minX = CGRectGetMidX(hostFrame);
+        maxX = minX;
+    }
+    CGFloat x = MIN(MAX(targetX, minX), maxX);
+    for (UIView *sibling in parent.subviews) {
+        if (sibling == host || !VLMNameLooksLikeArrow(sibling)) {
+            continue;
+        }
+        sibling.hidden = NO;
+        sibling.alpha = 1;
+        sibling.userInteractionEnabled = NO;
+        CGFloat height = MAX(sibling.bounds.size.height, 8.0);
+        CGFloat y = below
+            ? (CGRectGetMinY(hostFrame) - height / 2.0 + 1.0)
+            : (CGRectGetMaxY(hostFrame) + height / 2.0 - 1.0);
+        sibling.center = CGPointMake(x, y);
+    }
+}
+
 static void VLMRepairEditMenuChrome(UIView *host) {
     if (!host) {
         return;
     }
-    host.clipsToBounds = YES;
-    host.layer.cornerRadius = 14.0;
-    host.layer.masksToBounds = YES;
+    host.clipsToBounds = NO;
+    host.layer.masksToBounds = NO;
     VLMHidePagingControls(host);
-    VLMKillSystemBackdrop(host, 6);
     VLMFitSystemPlatterToHost(host);
     VLMHideStrayBackdrops(host);
-    VLMHideSystemArrowsNear(host);
-    VLMScheduleArrow(host);
-}
-
-static void VLMScheduleChromeRepair(UIView *host) {
-    if (!host || objc_getAssociatedObject(host, kVLMRepairScheduledKey)) {
-        return;
-    }
-    objc_setAssociatedObject(host, kVLMRepairScheduledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    __weak UIView *weakHost = host;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIView *strongHost = weakHost;
-        if (!strongHost) {
-            return;
-        }
-        objc_setAssociatedObject(strongHost, kVLMRepairScheduledKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        UICollectionView *collectionView = VLMCollectionViewInHost(strongHost);
-        if (VLMCollectionViewIsScrolling(collectionView)) {
-            return;
-        }
-        VLMRepairEditMenuChrome(strongHost);
-    });
+    BOOL below = VLMShouldGrowDownward(host);
+    VLMSetSystemArrowDirection(host, below);
 }
 
 static NSString *VLMHierarchyExtra(UIView *view) {
@@ -1610,6 +1585,9 @@ static void VLMDumpMenuHierarchy(UIView *host) {
         return;
     }
     objc_setAssociatedObject(host, key, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (!gDebug) {
+        return;
+    }
 
     UIView *root = host;
     for (NSInteger depth = 0; root.superview && depth < 10; depth++) {
@@ -1621,217 +1599,22 @@ static void VLMDumpMenuHierarchy(UIView *host) {
 
     UIWindow *window = host.window;
     NSString *tmp = NSTemporaryDirectory();
-    BOOL incoming = NO;
-    if (gProfiles.count > 0) {
-        incoming = VLMWriteIncomingSnapshot(@{
-            VLMMenuProfilesKey: gProfiles,
-            VLMPrefsStampKey: @((NSTimeInterval)[[NSDate date] timeIntervalSince1970]),
-        });
-    }
-    NSMutableString *out = [NSMutableString stringWithFormat:@"[VerticalMenu] hierarchy dump %@ bundle=%@ alpha=%.2f tmp=%@ incoming=%d safe=%@ frame=%@\n",
+    NSMutableString *out = [NSMutableString stringWithFormat:@"[VerticalMenu] hierarchy dump %@ bundle=%@ alpha=%.2f tmp=%@ safe=%@ frame=%@\n",
                             [NSDate date],
                             VLMCurrentBundleID(),
                             host.alpha,
                             tmp,
-                            incoming,
                             window ? NSStringFromUIEdgeInsets(window.safeAreaInsets) : @"",
                             NSStringFromCGRect(host.frame)];
     VLMAppendHierarchy(root, host, 0, out);
+    if (!gDebug) {
+        return;
+    }
     NSString *sandboxPath = [tmp stringByAppendingPathComponent:@"VerticalMenu-menu.txt"];
     [out writeToFile:sandboxPath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
     NSString *sharedPath = @"/var/tmp/VerticalMenu-menu.txt";
     BOOL shared = [out writeToFile:sharedPath atomically:YES encoding:NSUTF8StringEncoding error:NULL];
-    NSLog(@"[VerticalMenu] hierarchy -> %@%@ incoming=%d (%@)", sandboxPath, shared ? [NSString stringWithFormat:@" and %@", sharedPath] : @"", incoming, VLMCurrentBundleID());
-}
-
-static BOOL VLMViewLooksLikeSystemArrow(UIView *view, UIView *host) {
-    if (!view || view == host || [view isKindOfClass:[VLMSelectionAnchorView class]]) {
-        return NO;
-    }
-    if ([host isDescendantOfView:view]) {
-        return NO;
-    }
-    NSString *name = NSStringFromClass(view.class);
-    if ([name containsString:@"Page"]
-        || [name containsString:@"Collection"]
-        || [name containsString:@"Cell"]
-        || [name containsString:@"ScrollIndicator"]) {
-        return NO;
-    }
-    if (VLMNameLooksLikeArrow(view)) {
-        return YES;
-    }
-    CGSize size = view.bounds.size;
-    if (size.width < 6.0 || size.height < 4.0 || size.width > 40.0 || size.height > 24.0) {
-        return NO;
-    }
-    UIView *parent = host.superview;
-    if (!parent) {
-        return NO;
-    }
-    CGRect hostInParent = host.frame;
-    CGRect viewInParent = [parent convertRect:view.bounds fromView:view];
-    BOOL centered = fabs(CGRectGetMidX(viewInParent) - CGRectGetMidX(hostInParent)) < 90.0;
-    BOOL atTop = fabs(CGRectGetMaxY(viewInParent) - CGRectGetMinY(hostInParent)) < 18.0
-        || fabs(CGRectGetMidY(viewInParent) - CGRectGetMinY(hostInParent)) < 14.0;
-    BOOL atBottom = fabs(CGRectGetMinY(viewInParent) - CGRectGetMaxY(hostInParent)) < 18.0
-        || fabs(CGRectGetMidY(viewInParent) - CGRectGetMaxY(hostInParent)) < 14.0;
-    return centered && (atTop || atBottom);
-}
-
-static void VLMHideSystemArrowsNear(UIView *host) {
-    if (!host) {
-        return;
-    }
-    static NSArray<NSString *> *keys;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        keys = @[
-            @"_arrowView", @"arrowView",
-            @"_pointerView", @"pointerView",
-            @"_calloutArrowView", @"calloutArrowView",
-            @"_shapeView", @"shapeView",
-            @"_arrow", @"arrow",
-        ];
-    });
-    UIView *kept = objc_getAssociatedObject(host, kVLMCustomArrowKey);
-    UIView *current = host;
-    for (NSInteger depth = 0; current && depth < 5; depth++) {
-        for (NSString *key in keys) {
-            @try {
-                id value = [current valueForKey:key];
-                if ([value isKindOfClass:[UIView class]] && value != kept) {
-                    VLMHideView(value);
-                }
-            } @catch (__unused NSException *exception) {
-            }
-        }
-        @try {
-            [current setValue:@0 forKey:@"arrowDirection"];
-        } @catch (__unused NSException *exception) {
-        }
-        current = current.superview;
-        if ([current isKindOfClass:[UIWindow class]]) {
-            break;
-        }
-    }
-
-    UIView *root = host.superview ?: host;
-    NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:root];
-    for (NSUInteger index = 0; index < queue.count && index < 120; index++) {
-        UIView *view = queue[index];
-        if ([view isKindOfClass:[VLMSelectionAnchorView class]] && view != kept) {
-            [view removeFromSuperview];
-            continue;
-        }
-        if (VLMViewLooksLikeSystemArrow(view, host)) {
-            VLMHideView(view);
-        }
-        if (view == host) {
-            for (UIView *sub in view.subviews) {
-                if ([sub isKindOfClass:[UICollectionView class]] || [sub isKindOfClass:[UICollectionViewCell class]]) {
-                    continue;
-                }
-                [queue addObject:sub];
-            }
-            continue;
-        }
-        [queue addObjectsFromArray:view.subviews];
-    }
-}
-
-static UIView *VLMEnsureCustomArrow(UIView *host) {
-    VLMSelectionAnchorView *arrow = objc_getAssociatedObject(host, kVLMCustomArrowKey);
-    if (!arrow) {
-        arrow = [[VLMSelectionAnchorView alloc] initWithFrame:CGRectMake(0, 0, kVLMArrowWidth, kVLMArrowHeight)];
-        objc_setAssociatedObject(host, kVLMCustomArrowKey, arrow, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    }
-    UIView *parent = host.superview;
-    if (parent && arrow.superview != parent) {
-        [parent addSubview:arrow];
-    }
-    for (UIView *sibling in [parent.subviews copy]) {
-        if ([sibling isKindOfClass:[VLMSelectionAnchorView class]] && sibling != arrow) {
-            [sibling removeFromSuperview];
-        }
-    }
-    arrow.layer.zPosition = host.layer.zPosition + 10.0;
-    return arrow;
-}
-
-static void VLMRemoveCustomArrow(UIView *host) {
-    UIView *arrow = objc_getAssociatedObject(host, kVLMCustomArrowKey);
-    [arrow removeFromSuperview];
-}
-
-static void VLMPointArrowAtSelection(UIView *host, CGRect selection, BOOL below) {
-    if (!host.superview || !host.window || CGRectIsNull(selection)) {
-        return;
-    }
-
-    VLMHideSystemArrowsNear(host);
-    VLMSelectionAnchorView *arrow = (VLMSelectionAnchorView *)VLMEnsureCustomArrow(host);
-    if (!arrow || !arrow.superview) {
-        return;
-    }
-
-    CGRect hostInParent = host.frame;
-    CGFloat targetX = CGRectGetMidX([host.superview convertRect:selection fromView:host.window]);
-    CGFloat minX = CGRectGetMinX(hostInParent) + 22.0;
-    CGFloat maxX = CGRectGetMaxX(hostInParent) - 22.0;
-    if (maxX < minX) {
-        minX = CGRectGetMidX(hostInParent);
-        maxX = minX;
-    }
-    CGFloat x = MIN(MAX(targetX, minX), maxX);
-    arrow.transform = CGAffineTransformIdentity;
-    arrow.bounds = CGRectMake(0, 0, kVLMArrowWidth, kVLMArrowHeight);
-    BOOL pointsUp = below;
-    CGFloat originY = below
-        ? (CGRectGetMinY(hostInParent) - kVLMArrowHeight + kVLMArrowOverlap)
-        : (CGRectGetMaxY(hostInParent) - kVLMArrowOverlap);
-    CGPoint newCenter = CGPointMake(x, originY + kVLMArrowHeight / 2.0);
-    if (fabs(arrow.center.x - newCenter.x) < 0.5
-        && fabs(arrow.center.y - newCenter.y) < 0.5
-        && arrow.pointsUp == pointsUp
-        && !arrow.hidden) {
-        return;
-    }
-    arrow.pointsUp = pointsUp;
-    arrow.center = newCenter;
-    arrow.hidden = NO;
-    arrow.alpha = 1;
-    [arrow setNeedsDisplay];
-    VLMLog(@"custom arrow x=%.1f below=%d selection=%@", x, below, NSStringFromCGRect(selection));
-}
-
-static void VLMScheduleArrow(UIView *host) {
-    if (!host || objc_getAssociatedObject(host, kVLMArrowScheduledKey)) {
-        return;
-    }
-    objc_setAssociatedObject(host, kVLMArrowScheduledKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    __weak UIView *weakHost = host;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIView *strongHost = weakHost;
-        if (!strongHost) {
-            return;
-        }
-        objc_setAssociatedObject(strongHost, kVLMArrowScheduledKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        VLMRefreshArrow(strongHost);
-    });
-}
-
-static void VLMRefreshArrow(UIView *host) {
-    if (!host.window) {
-        return;
-    }
-    CGRect selection = VLMSelectionRectInWindow(host.window);
-    if (CGRectIsNull(selection) || selection.size.height < 1.0) {
-        return;
-    }
-    CGRect hostInWindow = [host convertRect:host.bounds toView:host.window];
-    BOOL below = CGRectGetMidY(selection) <= CGRectGetMidY(hostInWindow);
-    VLMPointArrowAtSelection(host, selection, below);
+    NSLog(@"[VerticalMenu] hierarchy -> %@%@ (%@)", sandboxPath, shared ? [NSString stringWithFormat:@" and %@", sharedPath] : @"", VLMCurrentBundleID());
 }
 
 static UIView *VLMFindEditMenuList(UIView *view, NSInteger depth) {
@@ -2018,7 +1801,7 @@ static BOOL VLMPositionHostNearSelection(UIView *host, CGSize fitted) {
 
     VLMSetFrameInWindow(host, listRect);
     VLMRepairEditMenuChrome(host);
-    VLMScheduleArrow(host);
+    VLMAttachSystemArrows(host, below);
     VLMLog(@"pin selection=%@ list=%@ below=%d", NSStringFromCGRect(selection), NSStringFromCGRect(listRect), below);
     return YES;
 }
@@ -2034,6 +1817,9 @@ static void VLMKeepOnScreen(UIView *view) {
     objc_setAssociatedObject(view, kVLMFrameGuardKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     view.frame = clamped;
     objc_setAssociatedObject(view, kVLMFrameGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    BOOL below = VLMShouldGrowDownward(view);
+    VLMSetSystemArrowDirection(view, below);
+    VLMAttachSystemArrows(view, below);
 }
 
 static NSInteger VLMVisibleMappedCount(UICollectionView *collectionView, NSInteger fallback) {
@@ -2070,6 +1856,7 @@ static void VLMRepositionVisibleEditMenus(void) {
         if (!list || list.alpha < 0.2 || !list.window) {
             continue;
         }
+        objc_setAssociatedObject(list, kVLMGrowDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         CGSize fitted = VLMVerticalFittingSize(list, list.bounds.size);
         VLMPositionHostNearSelection(list, fitted);
         VLMKeepOnScreen(list);
@@ -2247,9 +2034,9 @@ static void VLMRefreshCollectionSortMap(id host, UICollectionView *collectionVie
     }
 
     NSDictionary *profile = VLMProfileForKind(VLMMenuKindEdit);
-    NSSet<NSString *> *hidden = VLMHiddenSetForProfile(profile);
-    BOOL customOrder = profile ? VLMProfileCustomOrder(profile) : NO;
-    NSArray<NSString *> *orderIDs = profile ? VLMProfileDisplayOrder(profile) : @[];
+    NSSet<NSString *> *hidden = VLMEffectiveHiddenSet(VLMMenuKindEdit, profile);
+    BOOL customOrder = VLMUsesCustomOrder(VLMMenuKindEdit, profile);
+    NSArray<NSString *> *orderIDs = VLMEffectiveOrder(VLMMenuKindEdit, profile);
     objc_setAssociatedObject(collectionView, kVLMHiddenSetKey, hidden, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     NSArray<NSNumber *> *map = nil;
@@ -2448,7 +2235,7 @@ static void VLMConfigureCollectionPhysics(UICollectionView *collectionView, NSIn
     collectionView.showsHorizontalScrollIndicator = NO;
     collectionView.showsVerticalScrollIndicator = (visibleCount > kVLMVisibleRows);
     collectionView.clipsToBounds = YES;
-    collectionView.backgroundColor = VLMMenuBackgroundColor();
+    collectionView.backgroundColor = [UIColor clearColor];
     collectionView.layer.cornerRadius = 14.0;
     collectionView.layer.masksToBounds = YES;
     if (@available(iOS 10.0, *)) {
@@ -2495,7 +2282,6 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     NSInteger visibleCount = VLMVisibleMappedCount(collectionView, VLMItemCount(collectionView));
     if (setupDone) {
         VLMConfigureCollectionPhysics(collectionView, visibleCount);
-        VLMScheduleChromeRepair(host);
         if (!objc_getAssociatedObject(collectionView, kVLMMapFrozenKey)) {
             VLMScheduleRememberFromList(host);
         }
@@ -2542,7 +2328,9 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
                 VLMStripSizeAnimations(host);
             }
             if (!CGRectIsNull(selection)) {
-                VLMScheduleArrow(host);
+                BOOL below = VLMShouldGrowDownward(host);
+                VLMSetSystemArrowDirection(host, below);
+                VLMAttachSystemArrows(host, below);
             }
             VLMLog(@"anchor growDown=%d frame=%@", growDown, NSStringFromCGRect(host.frame));
         }
@@ -2563,7 +2351,9 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
         [collectionView layoutIfNeeded];
     }
 
-    VLMScheduleArrow(host);
+    BOOL below = VLMShouldGrowDownward(host);
+    VLMSetSystemArrowDirection(host, below);
+    VLMAttachSystemArrows(host, below);
     VLMSortEditMenuHost(host);
     VLMRefreshCollectionSortMap(host, collectionView);
     VLMScheduleRememberFromList(host);
@@ -2874,24 +2664,47 @@ static UIColor *VLMBestIconTint(NSArray<UIImageView *> *images, UIImageView *slo
     return fallback;
 }
 
+static UIImageView *VLMBestNativeIconView(NSArray<UIImageView *> *images, UIImageView *slot, UIView *content) {
+    UIImageView *best = nil;
+    CGFloat bestScore = -1.0;
+    for (UIImageView *candidate in images) {
+        if (candidate == slot || VLMIsBackgroundImageView(candidate, content)) {
+            continue;
+        }
+        if (!VLMImageIsUsableIcon(candidate.image)) {
+            continue;
+        }
+        CGSize size = candidate.bounds.size;
+        if (size.width < 4.0) {
+            size = candidate.image.size;
+        }
+        CGFloat area = size.width * size.height;
+        CGFloat delta = fabs(size.width - kVLMIconSize) + fabs(size.height - kVLMIconSize);
+        CGFloat score = area - delta * 8.0;
+        if (score > bestScore) {
+            best = candidate;
+            bestScore = score;
+        }
+    }
+    return best;
+}
+
+static void VLMHideLeftoverCover(UIView *content, UIView *cell) {
+    UIView *cover = objc_getAssociatedObject(content, kVLMCoverKey);
+    if (!cover) {
+        cover = objc_getAssociatedObject(cell, kVLMCoverKey);
+    }
+    if (cover) {
+        cover.hidden = YES;
+        cover.alpha = 0;
+        [cover removeFromSuperview];
+    }
+}
+
 static void VLMRelayoutCell(UIView *cell) {
     CGFloat width = cell.bounds.size.width;
     CGFloat height = cell.bounds.size.height;
     if (width < 8.0 || height < 8.0) {
-        return;
-    }
-    NSValue *lastSize = objc_getAssociatedObject(cell, kVLMLastCellSizeKey);
-    if (objc_getAssociatedObject(cell, kVLMTitleOverlayActiveKey)
-        && [lastSize isKindOfClass:[NSValue class]]
-        && CGSizeEqualToSize(lastSize.CGSizeValue, cell.bounds.size)) {
-        UIView *content = [cell isKindOfClass:[UICollectionViewCell class]] ? ((UICollectionViewCell *)cell).contentView : cell;
-        UIView *cover = objc_getAssociatedObject(content, kVLMCoverKey);
-        if (cover && !CGRectEqualToRect(cover.frame, cell.bounds)) {
-            cover.frame = cell.bounds;
-        }
-        if (!CGRectEqualToRect(content.frame, cell.bounds)) {
-            content.frame = cell.bounds;
-        }
         return;
     }
     if (objc_getAssociatedObject(cell, kVLMCellGuardKey)) {
@@ -2906,13 +2719,14 @@ static void VLMRelayoutCell(UIView *cell) {
             content.frame = cell.bounds;
         }
         content.clipsToBounds = NO;
-        content.layer.zPosition = 0;
+        content.backgroundColor = [UIColor clearColor];
     }
     cell.clipsToBounds = NO;
+    cell.backgroundColor = [UIColor clearColor];
+    VLMHideLeftoverCover(content, cell);
 
     UIImageView *slot = VLMEnsureFallbackSlot(content);
     UILabel *titleSlot = VLMEnsureTitleSlot(content);
-    UIView *cover = VLMEnsureCover(content);
 
     NSMutableArray<UILabel *> *labels = [NSMutableArray array];
     NSMutableArray<UIImageView *> *images = [NSMutableArray array];
@@ -2923,7 +2737,8 @@ static void VLMRelayoutCell(UIView *cell) {
     NSString *titleText = title ? VLMTrimmedText(title) : nil;
     UIFont *titleFont = title.font;
     UIColor *titleColor = title.textColor;
-    UIImage *iconImage = VLMBestIconImage(images, buttons, slot, content);
+    UIImageView *nativeIcon = VLMBestNativeIconView(images, slot, content);
+    UIImage *iconImage = nativeIcon.image;
     for (UIButton *button in buttons) {
         NSString *buttonTitle = VLMButtonTitle(button);
         if (buttonTitle.length > titleText.length) {
@@ -2984,9 +2799,12 @@ static void VLMRelayoutCell(UIView *cell) {
     }
 
     UIColor *tint = titleColor ?: UIColor.labelColor;
-    BOOL usedNativeIcon = VLMImageIsUsableIcon(iconImage);
-    if (!usedNativeIcon) {
-        iconImage = VLMFallbackMenuIcon();
+    BOOL usedNativeIcon = nativeIcon && VLMImageIsUsableIcon(nativeIcon.image);
+    BOOL hasTitle = VLMTrimTitle(titleText).length > 0;
+    BOOL sawTitle = objc_getAssociatedObject(cell, kVLMHadTitleKey) != nil;
+    BOOL showFallback = !usedNativeIcon && hasTitle && sawTitle;
+    if (hasTitle) {
+        objc_setAssociatedObject(cell, kVLMHadTitleKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     UIColor *iconTint = VLMBestIconTint(images, slot, content, tint);
 
@@ -3002,52 +2820,83 @@ static void VLMRelayoutCell(UIView *cell) {
     CGRect iconRect = CGRectMake(iconLeft, (content.bounds.size.height - kVLMIconSize) / 2.0, kVLMIconSize, kVLMIconSize);
     CGRect titleRect = CGRectMake(textX, 0, MAX(40.0, content.bounds.size.width - textX - 14.0), content.bounds.size.height);
 
-    objc_setAssociatedObject(cell, kVLMTitleOverlayActiveKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    for (UIImageView *imageView in images) {
+        if (imageView == slot || imageView == nativeIcon || VLMIsBackgroundImageView(imageView, content)) {
+            continue;
+        }
+        imageView.alpha = 0;
+    }
+    for (UILabel *label in labels) {
+        if (label == title || label == titleSlot) {
+            continue;
+        }
+        label.alpha = 0;
+    }
 
-    if (cover.superview != cell) {
-        [cell addSubview:cover];
-    }
-    if (slot.superview != cell) {
-        [cell addSubview:slot];
-    }
-    if (titleSlot.superview != cell) {
-        [cell addSubview:titleSlot];
-    }
-
-    cell.backgroundColor = VLMMenuBackgroundColor();
-    if ([cell isKindOfClass:[UICollectionViewCell class]]) {
-        ((UICollectionViewCell *)cell).contentView.backgroundColor = VLMMenuBackgroundColor();
-    }
-    cover.backgroundColor = VLMMenuBackgroundColor();
-    cover.frame = cell.bounds;
-    cover.hidden = NO;
-    cover.alpha = 1;
-    cover.layer.zPosition = 999;
-
-    slot.hidden = NO;
-    slot.alpha = 1;
-    slot.contentMode = UIViewContentModeScaleAspectFit;
-    slot.image = iconImage;
-    if (usedNativeIcon && iconImage.renderingMode == UIImageRenderingModeAlwaysOriginal) {
-        slot.tintColor = nil;
-    } else {
+    if (usedNativeIcon) {
+        nativeIcon.hidden = NO;
+        nativeIcon.alpha = 1;
+        nativeIcon.contentMode = UIViewContentModeScaleAspectFit;
+        VLMSetFrameFromContent(nativeIcon, content, iconRect);
+        if (slot.superview) {
+            slot.hidden = YES;
+            slot.alpha = 0;
+            [slot removeFromSuperview];
+        }
+    } else if (showFallback) {
+        if (slot.superview != cell) {
+            [cell addSubview:slot];
+        }
+        slot.hidden = NO;
+        slot.alpha = 1;
+        slot.contentMode = UIViewContentModeScaleAspectFit;
+        slot.image = VLMFallbackMenuIcon();
         slot.tintColor = iconTint;
+        slot.frame = iconRect;
+        slot.layer.zPosition = 20;
+    } else if (slot.superview) {
+        slot.hidden = YES;
+        slot.alpha = 0;
     }
-    slot.frame = iconRect;
-    slot.layer.zPosition = 1001;
 
-    titleSlot.hidden = (titleText.length == 0);
-    titleSlot.alpha = titleSlot.hidden ? 0 : 1;
-    titleSlot.attributedText = nil;
-    titleSlot.textAlignment = NSTextAlignmentLeft;
-    titleSlot.numberOfLines = 1;
-    titleSlot.lineBreakMode = NSLineBreakByTruncatingTail;
-    titleSlot.font = titleFont ?: [UIFont systemFontOfSize:17.0];
-    titleSlot.textColor = tint;
-    titleSlot.text = titleText;
-    titleSlot.frame = titleRect;
-    titleSlot.layer.zPosition = 1000;
-    objc_setAssociatedObject(cell, kVLMLastCellSizeKey, [NSValue valueWithCGSize:cell.bounds.size], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (title) {
+        title.hidden = (titleText.length == 0);
+        title.alpha = title.hidden ? 0 : 1;
+        title.textAlignment = NSTextAlignmentLeft;
+        title.numberOfLines = 1;
+        title.lineBreakMode = NSLineBreakByTruncatingTail;
+        if (titleFont) {
+            title.font = titleFont;
+        }
+        if (tint) {
+            title.textColor = tint;
+        }
+        VLMSetFrameFromContent(title, content, titleRect);
+        if (titleSlot.superview) {
+            titleSlot.hidden = YES;
+            titleSlot.alpha = 0;
+            [titleSlot removeFromSuperview];
+        }
+    } else if (hasTitle) {
+        if (titleSlot.superview != cell) {
+            [cell addSubview:titleSlot];
+        }
+        titleSlot.hidden = NO;
+        titleSlot.alpha = 1;
+        titleSlot.attributedText = nil;
+        titleSlot.textAlignment = NSTextAlignmentLeft;
+        titleSlot.numberOfLines = 1;
+        titleSlot.lineBreakMode = NSLineBreakByTruncatingTail;
+        titleSlot.font = titleFont ?: [UIFont systemFontOfSize:17.0];
+        titleSlot.textColor = tint;
+        titleSlot.text = titleText;
+        titleSlot.frame = titleRect;
+        titleSlot.layer.zPosition = 20;
+    } else if (titleSlot.superview) {
+        titleSlot.hidden = YES;
+        titleSlot.alpha = 0;
+    }
+
     objc_setAssociatedObject(cell, kVLMCellGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
@@ -3091,7 +2940,6 @@ static BOOL VLMIsInsideEditMenu(id view) {
     if (!gEnabled || orig.count == 0) {
         return orig;
     }
-    VLMRememberUIMenuElements(orig, VLMMenuKindContext);
     NSArray *sorted = VLMRewrittenElementsForKind(orig, VLMMenuKindContext);
     if (sorted != orig) {
         VLMLog(@"rewrote UIMenu children %lu -> %lu", (unsigned long)orig.count, (unsigned long)sorted.count);
@@ -3130,8 +2978,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
                      children:(NSArray *)children {
     if (VLMContextOn()) {
         options = options & ~kVLMPaletteOption;
-    }
-    if (VLMContextOn()) {
+        VLMRememberUIMenuElements(children, VLMMenuKindContext);
         children = VLMRewrittenElementsForKind(children, VLMMenuKindContext);
     }
     UIMenu *menu = %orig;
@@ -3148,8 +2995,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
                      children:(NSArray *)children {
     if (VLMContextOn()) {
         options = options & ~kVLMPaletteOption;
-    }
-    if (VLMContextOn()) {
+        VLMRememberUIMenuElements(children, VLMMenuKindContext);
         children = VLMRewrittenElementsForKind(children, VLMMenuKindContext);
     }
     UIMenu *menu = %orig;
@@ -3175,6 +3021,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
 
 + (instancetype)menuWithChildren:(NSArray *)children {
     if (VLMContextOn()) {
+        VLMRememberUIMenuElements(children, VLMMenuKindContext);
         children = VLMRewrittenElementsForKind(children, VLMMenuKindContext);
     }
     return %orig;
@@ -3240,6 +3087,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
         return;
     }
     if (previous < 0.9 && alpha >= 0.9) {
+        objc_setAssociatedObject(self, kVLMGrowDownKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         CGSize fitted = VLMVerticalFittingSize(self, self.bounds.size);
         VLMPositionHostNearSelection(self, fitted);
         VLMKeepOnScreen(self);
@@ -3271,7 +3119,6 @@ static BOOL VLMIsInsideEditMenu(id view) {
 - (void)didMoveToWindow {
     %orig;
     if (!self.window) {
-        VLMRemoveCustomArrow(self);
         UICollectionView *collectionView = VLMCollectionViewInHost(self);
         objc_setAssociatedObject(collectionView, kVLMMapFrozenKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(collectionView, kVLMCapturedTitlesKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -3325,7 +3172,7 @@ static BOOL VLMIsInsideEditMenu(id view) {
     objc_setAssociatedObject(content, kVLMCapturedImageKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(content, kVLMCapturedFontKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(content, kVLMCapturedColorKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(self, kVLMTitleOverlayActiveKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(self, kVLMHadTitleKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(self, kVLMLastCellSizeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     self.hidden = NO;
     self.alpha = 1;
@@ -3368,12 +3215,6 @@ static BOOL VLMIsInsideEditMenu(id view) {
         offset.x = 0;
     }
     %orig(offset);
-    if (VLMEditOn()
-        && VLMIsInsideEditMenu(self)
-        && [self.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]]
-        && !VLMCollectionViewIsScrolling(self)) {
-        VLMScheduleChromeRepair(VLMEnclosingEditMenuList(self));
-    }
 }
 
 - (void)setContentOffset:(CGPoint)offset animated:(BOOL)animated {
@@ -3456,10 +3297,6 @@ static BOOL VLMIsInsideEditMenu(id view) {
     self.backgroundColor = [UIColor clearColor];
     self.opaque = NO;
     VLMClearLayerShadow(self.layer);
-    UIView *list = VLMFindEditMenuList(self, 4);
-    if (list && !VLMCollectionViewIsScrolling(VLMCollectionViewInHost(list))) {
-        VLMScheduleChromeRepair(list);
-    }
     objc_setAssociatedObject(self, kVLMContainerGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
@@ -3521,7 +3358,6 @@ static void VLMIncomingPrefsChanged(CFNotificationCenterRef center, void *observ
         return;
     }
     VLMIngestIncomingPrefs();
-    VLMLoadPrefs();
 }
 
 %ctor {

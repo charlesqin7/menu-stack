@@ -1,7 +1,6 @@
 #import "VLMMenuListController.h"
 #import "VLMOrderListController.h"
 #import "../VLMMenuOrder.h"
-#import <CoreFoundation/CoreFoundation.h>
 
 @implementation VLMMenuListController {
     UITableView *_tableView;
@@ -11,7 +10,7 @@
 - (instancetype)init {
     self = [super init];
     if (self) {
-        self.title = @"按菜单设置";
+        self.title = @"按 App 例外";
         _profiles = @[];
     }
     return self;
@@ -41,20 +40,8 @@
 
 - (void)viewWillAppear:(BOOL)animated {
     [super viewWillAppear:animated];
+    VLMMigrateToGlobalRulesIfNeeded();
     [self reloadFromPrefs];
-    CFNotificationCenterPostNotification(
-        CFNotificationCenterGetDarwinNotifyCenter(),
-        (__bridge CFStringRef)VLMIncomingNotificationName,
-        NULL,
-        NULL,
-        true
-    );
-    __weak typeof(self) weakSelf = self;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.45 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(),
-                   ^{
-        [weakSelf reloadFromPrefs];
-    });
 }
 
 - (void)toggleEditing {
@@ -63,11 +50,7 @@
 
 - (void)reloadFromPrefs {
     NSDictionary *prefs = VLMReadPrefsDictionary();
-    id raw = prefs[VLMMenuProfilesKey];
-    _profiles = VLMSanitizeProfiles(raw);
-    if (VLMProfilesNeedRewrite(raw)) {
-        [self writeProfiles];
-    }
+    _profiles = VLMSanitizeProfiles(prefs[VLMMenuProfilesKey]);
     [_tableView reloadData];
 }
 
@@ -84,11 +67,11 @@
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return @"已出现过的菜单";
+    return @"最近弹出过的 App";
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return @"每个 App 只显示两条：文本选择（拷贝粘贴条）和上下文菜单（长按后的动作列表）。只记录当时菜单条上真正出现的项，子菜单和示例脚本（例如 MD清单）不会再写进来。某次弹出没有的项会被跳过。";
+    return @"每条是某个 App 最近一次弹出时菜单条上的项。这里只能再多藏几项，或拖动后覆盖该 App 的顺序。全局隐藏不能在这里打开。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
