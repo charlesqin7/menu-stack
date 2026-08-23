@@ -3375,20 +3375,15 @@ static void VLMIncomingPrefsChanged(CFNotificationCenterRef center, void *observ
     VLMStartIncomingObserverIfNeeded();
     BOOL hookedList = NO;
 
-    // SpringBoard is retained only as the preference bridge. Installing menu
-    // model hooks or running policy migration while it is launching can take
-    // down the shell and force the device into safe mode. Preferences performs
-    // the V2 migration, while ordinary UIKit apps own all menu presentation.
-    if (!isSpringBoard) {
-        %init(ContextMenus);
-    }
-
-    // 1.0.49 introduced process-wide delegate/provider interception here.
-    // UIEditMenuInteraction is created during launch by Settings, Notes and
-    // Safari, so a fault in that path takes down the entire host before a menu
-    // is shown. Keep these experimental groups compiled but inactive until
-    // they can be reintroduced behind narrower, device-verified guards.
+    // 1.0.50 crash logs show UIKit failing in the navigation bar's private
+    // _backButtonMenu builder while this dylib is loaded. ContextMenus hooks
+    // UIMenu process-wide, so it also intercepts system navigation menus long
+    // before the user opens a context menu. The edit delegate and deferred
+    // provider groups have the same process-wide blast radius. Keep all three
+    // groups compiled but inactive until they are replaced with narrow,
+    // device-verified presentation hooks.
     if (NO) {
+        %init(ContextMenus);
         %init(EditMenuModel);
         %init(DeferredMenus);
     }
