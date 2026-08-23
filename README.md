@@ -64,12 +64,12 @@ layout/Library/PreferenceLoader/Preferences/
 - `Enabled`：总开关，默认开
 - `ContextMenus`：改 compact / palette 上下文菜单
 - `EditMenus`：改拷贝粘贴条
-- `CustomOrder`：按自定义顺序排列菜单项，默认关；在「调整顺序与隐藏」里拖动或隐藏后会自动打开
-- `MenuItemOrder`：菜单项 ID 数组，决定弹出顺序
-- `HiddenMenuItems`：被隐藏的菜单项 ID，弹出菜单里不显示
+- `CustomOrder`：已改为按每个菜单单独记录；只有拖过顺序的那个菜单才会按自定义顺序排
+- `MenuItemOrder` / `HiddenMenuItems`：旧版全局列表，仅作尚未记录过的菜单的隐藏回退
+- `MenuProfiles`：每种菜单自己的项目、顺序和隐藏列表
 - `Debug`：NSLog 前缀 `[VerticalMenu]`
 
-在设置里打开「调整顺序与隐藏」，按住右边横条拖动顺序，或关掉某项的开关来隐藏。隐藏按菜单格子上的标题匹配（例如 Safari 的「翻译」「共享…」），不依赖系统内部命令 ID。列表默认只包含系统文本菜单里的常用项；在 App 里弹出过的其它项会补上。当前菜单里没有的项会被跳过。
+在设置里打开「按菜单设置顺序与隐藏」。先在对应 App 里弹出一次菜单，列表里就会出现「备忘录 · 文本选择」「Safari · 文本选择」等条目。每个菜单的隐藏和顺序互不影响。关掉某项即可隐藏，不必打开自定义排序。
 
 改开关或排序后点「注销 SpringBoard」，并且把目标 App 从多任务里划掉再开，注入才会进新进程。
 

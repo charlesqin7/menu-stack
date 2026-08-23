@@ -6,8 +6,9 @@
 - (id)specifier;
 - (void)setRootController:(id)controller;
 - (void)setParentController:(id)controller;
+- (id)rootController;
+- (id)parentController;
 @end
 
-@interface VLMOrderListController : PSViewController <UITableViewDataSource, UITableViewDelegate>
-@property (nonatomic, copy) NSString *profileID;
+@interface VLMMenuListController : PSViewController <UITableViewDataSource, UITableViewDelegate>
 @end

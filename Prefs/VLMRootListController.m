@@ -7,9 +7,11 @@
 extern char **environ;
 
 #ifndef VLM_VERSION
-#define VLM_VERSION "1.0.33"
+#define VLM_VERSION "1.0.36"
 #endif
 
+@interface VLMMenuListController : UIViewController
+@end
 @interface VLMOrderListController : UIViewController
 @end
 
@@ -30,6 +32,7 @@ extern char **environ;
 @implementation VLMRootListController
 
 + (void)load {
+    (void)[VLMMenuListController class];
     (void)[VLMOrderListController class];
 }
 

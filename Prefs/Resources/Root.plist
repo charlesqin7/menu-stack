@@ -58,33 +58,19 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>菜单排序</string>
+			<string>按菜单设置</string>
 			<key>footerText</key>
-			<string>打开后，弹出菜单按你设好的顺序排列。点「调整顺序与隐藏」可拖动项目，或关掉某项的开关来隐藏。隐藏按菜单上显示的文字匹配，设置列表只含系统文本菜单常用项。改完后请注销或划掉正在用的 App。</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>default</key>
-			<false/>
-			<key>defaults</key>
-			<string>com.qins.verticalmenu</string>
-			<key>key</key>
-			<string>CustomOrder</string>
-			<key>label</key>
-			<string>自定义排序</string>
-			<key>PostNotification</key>
-			<string>com.qins.verticalmenu/ReloadPrefs</string>
+			<string>隐藏和排序分开：关掉某项即可隐藏，不必打开自定义排序。点「按菜单设置」可为备忘录、Safari 等每种长按菜单单独调整。改完后请注销或划掉正在用的 App。</string>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSLinkCell</string>
 			<key>detail</key>
-			<string>VLMOrderListController</string>
+			<string>VLMMenuListController</string>
 			<key>isController</key>
 			<true/>
 			<key>label</key>
-			<string>调整顺序与隐藏</string>
+			<string>按菜单设置顺序与隐藏</string>
 		</dict>
 		<dict>
 			<key>cell</key>

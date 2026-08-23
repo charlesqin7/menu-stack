@@ -8,7 +8,7 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
     UITableView *_tableView;
     NSMutableArray<NSString *> *_order;
     NSMutableSet<NSString *> *_hidden;
-    NSDictionary<NSString *, NSString *> *_labels;
+    NSMutableDictionary<NSString *, NSString *> *_labels;
 }
 
 - (instancetype)init {
@@ -16,6 +16,8 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
     if (self) {
         self.title = @"菜单排序";
         _hidden = [NSMutableSet set];
+        _labels = [NSMutableDictionary dictionary];
+        _order = [NSMutableArray array];
     }
     return self;
 }
@@ -52,45 +54,64 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
     [self reloadFromPrefs];
 }
 
-- (NSDictionary *)prefsDictionary {
-    return VLMReadPrefsDictionary();
+- (NSDictionary *)currentProfile {
+    NSDictionary *prefs = VLMReadPrefsDictionary();
+    return VLMProfileWithID(prefs[VLMMenuProfilesKey], self.profileID);
 }
 
 - (void)reloadFromPrefs {
-    NSDictionary *prefs = [self prefsDictionary];
-    _order = [VLMDisplayOrderIDs(prefs[VLMMenuOrderKey], prefs[VLMKnownItemsKey]) mutableCopy];
-    _hidden = [NSMutableSet setWithArray:VLMSanitizeHiddenIDs(prefs[VLMHiddenItemsKey])];
-
-    NSMutableDictionary<NSString *, NSString *> *labels = [NSMutableDictionary dictionary];
-    for (NSString *itemID in _order) {
-        labels[itemID] = VLMLabelForItemID(itemID);
-    }
-    for (NSDictionary *item in VLMSanitizeKnownItems(prefs[VLMKnownItemsKey])) {
+    NSDictionary *profile = [self currentProfile];
+    _order = [VLMProfileDisplayOrder(profile) mutableCopy];
+    _hidden = [NSMutableSet setWithArray:VLMProfileHiddenIDs(profile)];
+    _labels = [NSMutableDictionary dictionary];
+    for (NSDictionary *item in VLMProfileItems(profile)) {
         NSString *itemID = item[@"id"];
-        NSString *title = item[@"title"] ?: item[@"label"];
-        if (itemID.length == 0) {
-            continue;
-        }
-        if (title.length > 0) {
-            labels[itemID] = title;
+        NSString *title = item[@"title"] ?: VLMLabelForItemID(itemID);
+        if (itemID.length > 0 && title.length > 0) {
+            _labels[itemID] = title;
         }
     }
-    _labels = labels;
+    for (NSString *itemID in _order) {
+        if (!_labels[itemID]) {
+            _labels[itemID] = VLMLabelForItemID(itemID) ?: itemID;
+        }
+    }
     [_tableView reloadData];
 }
 
 - (void)writePrefsAndEnableCustomSort:(BOOL)enableCustomSort {
-    VLMWritePrefsValues(@{
-        VLMMenuOrderKey: [_order copy] ?: @[],
-        VLMHiddenItemsKey: _hidden.allObjects ?: @[],
-        VLMCustomOrderKey: enableCustomSort ? @YES : @NO,
-    }, YES);
+    NSDictionary *prefs = VLMReadPrefsDictionary();
+    NSDictionary *existing = VLMProfileWithID(prefs[VLMMenuProfilesKey], self.profileID);
+    if (!existing) {
+        return;
+    }
+    NSMutableDictionary *updated = [existing mutableCopy];
+    updated[@"order"] = [_order copy] ?: @[];
+    updated[@"hidden"] = _hidden.allObjects ?: @[];
+    if (enableCustomSort) {
+        updated[@"customOrder"] = @YES;
+    }
+    NSArray *profiles = VLMUpsertProfile(prefs[VLMMenuProfilesKey], updated);
+    VLMWritePrefsValues(@{VLMMenuProfilesKey: profiles}, YES);
 }
 
 - (void)resetOrder {
-    _order = [VLMDefaultOrderIDs() mutableCopy];
+    NSDictionary *profile = [self currentProfile];
+    NSMutableArray<NSString *> *ids = [NSMutableArray array];
+    for (NSDictionary *item in VLMProfileItems(profile)) {
+        if (item[@"id"]) {
+            [ids addObject:item[@"id"]];
+        }
+    }
+    _order = ids;
     [_hidden removeAllObjects];
-    [self writePrefsAndEnableCustomSort:NO];
+    NSDictionary *prefs = VLMReadPrefsDictionary();
+    NSMutableDictionary *updated = [profile mutableCopy] ?: [NSMutableDictionary dictionary];
+    updated[@"order"] = [_order copy] ?: @[];
+    updated[@"hidden"] = @[];
+    updated[@"customOrder"] = @NO;
+    NSArray *profiles = VLMUpsertProfile(prefs[VLMMenuProfilesKey], updated);
+    VLMWritePrefsValues(@{VLMMenuProfilesKey: profiles}, YES);
     [_tableView reloadData];
 }
 
@@ -103,7 +124,7 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
     } else {
         [_hidden addObject:itemID];
     }
-    [self writePrefsAndEnableCustomSort:YES];
+    [self writePrefsAndEnableCustomSort:NO];
     [_tableView reloadData];
 }
 
@@ -117,7 +138,7 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
     } else {
         [_hidden addObject:itemID];
     }
-    [self writePrefsAndEnableCustomSort:YES];
+    [self writePrefsAndEnableCustomSort:NO];
     [_tableView reloadData];
 }
 
@@ -130,7 +151,7 @@ static const void *kVLMSwitchItemIDKey = &kVLMSwitchItemIDKey;
 }
 
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    return @"按住右边横条拖动调整顺序。关闭某项右边的开关即可隐藏，隐藏的项不会出现在弹出菜单里。这里只列出系统文本菜单里的常用项（剪切、拷贝、查询、翻译、搜索网页、共享、快速备忘录等）。在 App 里真正弹出过的其它项会自动补上，设置页里的无关菜单不会再出现。改完后请注销或划掉正在用的 App 再打开。";
+    return @"这里只列出这个菜单里出现过的项。关闭右边开关即可隐藏，不必打开自定义排序，也不会改到别的菜单。按住右边横条拖动后，只有这个菜单会按你的顺序排列。";
 }
 
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {

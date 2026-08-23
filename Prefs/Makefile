@@ -4,7 +4,7 @@ BUNDLE_NAME = VerticalMenuPrefs
 
 VLM_PKG_VERSION := $(shell awk '/^Version:/{print $$2; exit}' ../control)
 
-VerticalMenuPrefs_FILES = VLMRootListController.m VLMOrderListController.m ../VLMMenuOrder.m
+VerticalMenuPrefs_FILES = VLMRootListController.m VLMOrderListController.m VLMMenuListController.m ../VLMMenuOrder.m
 VerticalMenuPrefs_FRAMEWORKS = UIKit
 VerticalMenuPrefs_PRIVATE_FRAMEWORKS = Preferences
 VerticalMenuPrefs_INSTALL_PATH = /Library/PreferenceBundles

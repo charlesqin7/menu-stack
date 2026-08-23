@@ -14,6 +14,9 @@ NSString * const VLMCustomOrderKey = @"CustomOrder";
 NSString * const VLMKnownItemsKey = @"KnownMenuItems";
 NSString * const VLMHiddenItemsKey = @"HiddenMenuItems";
 NSString * const VLMPrefsStampKey = @"PrefsStamp";
+NSString * const VLMMenuProfilesKey = @"MenuProfiles";
+NSString * const VLMMenuKindEdit = @"edit";
+NSString * const VLMMenuKindContext = @"context";
 
 static NSArray<NSString *> *VLMPrefsFilePaths(void) {
     NSMutableArray<NSString *> *paths = [NSMutableArray array];
@@ -592,6 +595,290 @@ NSArray<NSDictionary *> *VLMMergedKnownItems(NSArray *stored, NSArray *extra) {
     }
     for (id item in extra) {
         VLMAppendKnownItem(result, seen, item);
+    }
+    return result;
+}
+
+NSString *VLMCurrentBundleID(void) {
+    return [[NSBundle mainBundle] bundleIdentifier] ?: @"";
+}
+
+NSString *VLMGuessAppName(NSString *bundleID) {
+    NSString *current = [[NSBundle mainBundle] bundleIdentifier];
+    if (bundleID.length && [bundleID isEqualToString:current]) {
+        NSString *name = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleDisplayName"];
+        if (name.length == 0) {
+            name = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleName"];
+        }
+        if (name.length > 0) {
+            return name;
+        }
+    }
+    static NSDictionary<NSString *, NSString *> *names;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        names = @{
+            @"com.apple.mobilenotes": @"备忘录",
+            @"com.apple.mobilesafari": @"Safari",
+            @"com.apple.MobileSMS": @"信息",
+            @"com.apple.mail": @"邮件",
+            @"com.apple.mobilemail": @"邮件",
+            @"com.apple.DocumentsApp": @"文件",
+            @"com.apple.mobileslideshow": @"照片",
+            @"com.apple.mobilecal": @"日历",
+            @"com.apple.reminders": @"提醒事项",
+            @"com.apple.Preferences": @"设置",
+        };
+    });
+    if (bundleID.length && names[bundleID]) {
+        return names[bundleID];
+    }
+    return bundleID.length ? bundleID : @"未知 App";
+}
+
+NSString *VLMKindDisplayName(NSString *kind) {
+    if ([kind isEqualToString:VLMMenuKindContext]) {
+        return @"上下文菜单";
+    }
+    return @"文本选择";
+}
+
+NSString *VLMProfileIDForMenu(NSString *kind, NSString *bundleID, NSArray<NSString *> *itemIDs) {
+    NSMutableSet<NSString *> *unique = [NSMutableSet set];
+    for (NSString *itemID in itemIDs) {
+        if ([itemID isKindOfClass:[NSString class]] && itemID.length > 0) {
+            [unique addObject:itemID];
+        }
+    }
+    NSArray<NSString *> *sorted = [[unique allObjects] sortedArrayUsingSelector:@selector(compare:)];
+    return [NSString stringWithFormat:@"%@|%@|%@", kind.length ? kind : VLMMenuKindEdit, bundleID ?: @"", [sorted componentsJoinedByString:@","]];
+}
+
+static NSArray<NSDictionary *> *VLMSanitizeProfileItems(id value) {
+    NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    if (![value isKindOfClass:[NSArray class]]) {
+        return items;
+    }
+    for (id item in (NSArray *)value) {
+        VLMAppendKnownItem(items, seen, item);
+    }
+    return items;
+}
+
+NSArray<NSDictionary *> *VLMProfileItems(NSDictionary *profile) {
+    if (![profile isKindOfClass:[NSDictionary class]]) {
+        return @[];
+    }
+    return VLMSanitizeProfileItems(profile[@"items"]);
+}
+
+NSArray<NSString *> *VLMProfileDisplayOrder(NSDictionary *profile) {
+    NSArray<NSDictionary *> *items = VLMProfileItems(profile);
+    NSMutableArray<NSString *> *discovery = [NSMutableArray array];
+    NSMutableSet<NSString *> *allowed = [NSMutableSet set];
+    for (NSDictionary *item in items) {
+        NSString *itemID = item[@"id"];
+        if (itemID.length == 0 || [allowed containsObject:itemID]) {
+            continue;
+        }
+        [allowed addObject:itemID];
+        [discovery addObject:itemID];
+    }
+    NSMutableArray<NSString *> *order = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    id saved = profile[@"order"];
+    if ([saved isKindOfClass:[NSArray class]]) {
+        for (id item in (NSArray *)saved) {
+            NSString *itemID = VLMExtractItemID(item);
+            if (itemID.length == 0 || [seen containsObject:itemID] || ![allowed containsObject:itemID]) {
+                continue;
+            }
+            [seen addObject:itemID];
+            [order addObject:itemID];
+        }
+    }
+    for (NSString *itemID in discovery) {
+        if (![seen containsObject:itemID]) {
+            [order addObject:itemID];
+        }
+    }
+    return order;
+}
+
+NSArray<NSString *> *VLMProfileHiddenIDs(NSDictionary *profile) {
+    if (![profile isKindOfClass:[NSDictionary class]]) {
+        return @[];
+    }
+    return VLMSanitizeHiddenIDs(profile[@"hidden"]);
+}
+
+BOOL VLMProfileCustomOrder(NSDictionary *profile) {
+    if (![profile isKindOfClass:[NSDictionary class]]) {
+        return NO;
+    }
+    return [profile[@"customOrder"] boolValue];
+}
+
+NSString *VLMProfileDisplayTitle(NSDictionary *profile) {
+    if (![profile isKindOfClass:[NSDictionary class]]) {
+        return @"菜单";
+    }
+    NSString *appName = profile[@"appName"];
+    if (appName.length == 0) {
+        appName = VLMGuessAppName(profile[@"bundle"]);
+    }
+    return [NSString stringWithFormat:@"%@ · %@", appName, VLMKindDisplayName(profile[@"kind"])];
+}
+
+NSString *VLMProfileSubtitle(NSDictionary *profile) {
+    NSArray<NSDictionary *> *items = VLMProfileItems(profile);
+    NSArray<NSString *> *hidden = VLMProfileHiddenIDs(profile);
+    NSMutableArray<NSString *> *names = [NSMutableArray array];
+    for (NSDictionary *item in items) {
+        if (names.count >= 4) {
+            break;
+        }
+        NSString *title = item[@"title"] ?: VLMLabelForItemID(item[@"id"]);
+        if (title.length > 0) {
+            [names addObject:title];
+        }
+    }
+    NSString *preview = names.count ? [names componentsJoinedByString:@"、"] : @"暂无项目";
+    if (hidden.count > 0) {
+        return [NSString stringWithFormat:@"已隐藏 %lu 项 · %@", (unsigned long)hidden.count, preview];
+    }
+    return preview;
+}
+
+NSArray<NSDictionary *> *VLMSanitizeProfiles(id value) {
+    if (![value isKindOfClass:[NSArray class]]) {
+        return @[];
+    }
+    NSMutableArray<NSDictionary *> *profiles = [NSMutableArray array];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    for (id item in (NSArray *)value) {
+        if (![item isKindOfClass:[NSDictionary class]]) {
+            continue;
+        }
+        NSDictionary *profile = item;
+        NSArray<NSDictionary *> *items = VLMProfileItems(profile);
+        if (items.count == 0) {
+            continue;
+        }
+        NSMutableArray<NSString *> *ids = [NSMutableArray array];
+        for (NSDictionary *entry in items) {
+            [ids addObject:entry[@"id"]];
+        }
+        NSString *kind = profile[@"kind"] ?: VLMMenuKindEdit;
+        NSString *bundle = profile[@"bundle"] ?: @"";
+        NSString *profileID = profile[@"id"];
+        if (profileID.length == 0) {
+            profileID = VLMProfileIDForMenu(kind, bundle, ids);
+        }
+        if ([seen containsObject:profileID]) {
+            continue;
+        }
+        [seen addObject:profileID];
+        [profiles addObject:@{
+            @"id": profileID,
+            @"kind": kind,
+            @"bundle": bundle,
+            @"appName": profile[@"appName"] ?: VLMGuessAppName(bundle),
+            @"items": items,
+            @"order": VLMProfileDisplayOrder(profile),
+            @"hidden": VLMProfileHiddenIDs(profile),
+            @"customOrder": @(VLMProfileCustomOrder(profile)),
+            @"seenAt": profile[@"seenAt"] ?: @0,
+        }];
+    }
+    [profiles sortUsingComparator:^NSComparisonResult(NSDictionary *left, NSDictionary *right) {
+        NSTimeInterval leftSeen = [left[@"seenAt"] doubleValue];
+        NSTimeInterval rightSeen = [right[@"seenAt"] doubleValue];
+        if (leftSeen < rightSeen) {
+            return NSOrderedDescending;
+        }
+        if (leftSeen > rightSeen) {
+            return NSOrderedAscending;
+        }
+        return [VLMProfileDisplayTitle(left) compare:VLMProfileDisplayTitle(right)];
+    }];
+    return profiles;
+}
+
+NSDictionary *VLMProfileWithID(NSArray *profiles, NSString *profileID) {
+    if (profileID.length == 0) {
+        return nil;
+    }
+    for (NSDictionary *profile in VLMSanitizeProfiles(profiles)) {
+        if ([profile[@"id"] isEqualToString:profileID]) {
+            return profile;
+        }
+    }
+    return nil;
+}
+
+NSDictionary *VLMBuildProfile(NSString *kind,
+                             NSString *bundleID,
+                             NSString *appName,
+                             NSArray<NSDictionary *> *items,
+                             NSDictionary *existing,
+                             NSArray *inheritHidden) {
+    NSArray<NSDictionary *> *cleanItems = VLMSanitizeProfileItems(items);
+    NSMutableArray<NSString *> *ids = [NSMutableArray array];
+    for (NSDictionary *item in cleanItems) {
+        [ids addObject:item[@"id"]];
+    }
+    NSString *profileID = VLMProfileIDForMenu(kind, bundleID, ids);
+    NSMutableDictionary *seed = [NSMutableDictionary dictionary];
+    if ([existing isKindOfClass:[NSDictionary class]]) {
+        [seed addEntriesFromDictionary:existing];
+    } else {
+        NSSet<NSString *> *idSet = [NSSet setWithArray:ids];
+        NSMutableArray<NSString *> *hidden = [NSMutableArray array];
+        for (id item in inheritHidden) {
+            NSString *itemID = VLMExtractItemID(item);
+            if (itemID.length && [idSet containsObject:itemID] && ![hidden containsObject:itemID]) {
+                [hidden addObject:itemID];
+            }
+        }
+        seed[@"hidden"] = hidden;
+        seed[@"order"] = ids;
+        seed[@"customOrder"] = @NO;
+    }
+    seed[@"id"] = profileID;
+    seed[@"kind"] = kind.length ? kind : VLMMenuKindEdit;
+    seed[@"bundle"] = bundleID ?: @"";
+    seed[@"appName"] = appName.length ? appName : VLMGuessAppName(bundleID);
+    seed[@"items"] = cleanItems;
+    seed[@"seenAt"] = @([[NSDate date] timeIntervalSince1970]);
+    return [VLMSanitizeProfiles(@[seed]) firstObject] ?: seed;
+}
+
+NSArray<NSDictionary *> *VLMUpsertProfile(NSArray *profiles, NSDictionary *profile) {
+    NSMutableArray<NSDictionary *> *result = [VLMSanitizeProfiles(profiles) mutableCopy];
+    NSString *profileID = profile[@"id"];
+    if (profileID.length == 0) {
+        return result;
+    }
+    NSUInteger index = [result indexOfObjectPassingTest:^BOOL(NSDictionary *candidate, NSUInteger idx, BOOL *stop) {
+        return [candidate[@"id"] isEqualToString:profileID];
+    }];
+    NSDictionary *clean = [VLMSanitizeProfiles(@[profile]) firstObject] ?: profile;
+    if (index == NSNotFound) {
+        [result insertObject:clean atIndex:0];
+    } else {
+        result[index] = clean;
+    }
+    return [VLMSanitizeProfiles(result) copy];
+}
+
+NSArray<NSDictionary *> *VLMRemoveProfile(NSArray *profiles, NSString *profileID) {
+    NSMutableArray<NSDictionary *> *result = [NSMutableArray array];
+    for (NSDictionary *profile in VLMSanitizeProfiles(profiles)) {
+        if (![profile[@"id"] isEqualToString:profileID]) {
+            [result addObject:profile];
+        }
     }
     return result;
 }
