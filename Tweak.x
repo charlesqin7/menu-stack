@@ -3388,6 +3388,10 @@ static void VLMIncomingPrefsChanged(CFNotificationCenterRef center, void *observ
     // Safari, so a fault in that path takes down the entire host before a menu
     // is shown. Keep these experimental groups compiled but inactive until
     // they can be reintroduced behind narrower, device-verified guards.
+    if (NO) {
+        %init(EditMenuModel);
+        %init(DeferredMenus);
+    }
 
     if (!isSpringBoard && objc_getClass("_UIEditMenuListView")) {
         %init(EditMenuList);
