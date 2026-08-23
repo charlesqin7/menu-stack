@@ -5,12 +5,13 @@
 #import <objc/message.h>
 #import <objc/runtime.h>
 #import <sys/stat.h>
-#import <TargetConditionals.h>
 #import <unistd.h>
 
 extern int64_t sandbox_extension_consume(const char *extension_token);
 
-#if TARGET_OS_IPHONE
+#if __has_include(<Foundation/NSDistributedNotificationCenter.h>)
+#import <Foundation/NSDistributedNotificationCenter.h>
+#else
 @interface NSDistributedNotificationCenter : NSNotificationCenter
 + (NSDistributedNotificationCenter *)defaultCenter;
 - (void)postNotificationName:(NSNotificationName)name object:(NSString *)object userInfo:(NSDictionary *)userInfo deliverImmediately:(BOOL)deliverImmediately;
