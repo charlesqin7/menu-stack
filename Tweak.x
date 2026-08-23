@@ -606,15 +606,10 @@ static BOOL VLMElementsLookLikeActionMenu(NSArray *elements) {
 
 static UIResponder *VLMFindFirstResponder(void) {
     NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
-    if (@available(iOS 13.0, *)) {
-        for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]]) {
-                [windows addObjectsFromArray:((UIWindowScene *)scene).windows];
-            }
+    for (UIScene *scene in UIApplication.sharedApplication.connectedScenes) {
+        if ([scene isKindOfClass:[UIWindowScene class]]) {
+            [windows addObjectsFromArray:((UIWindowScene *)scene).windows];
         }
-    }
-    if (windows.count == 0) {
-        [windows addObjectsFromArray:UIApplication.sharedApplication.windows];
     }
     SEL sel = NSSelectorFromString(@"firstResponder");
     for (UIWindow *window in windows) {
