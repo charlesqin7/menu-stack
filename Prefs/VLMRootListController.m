@@ -1,10 +1,16 @@
 #import "VLMRootListController.h"
-#import "VLMOrderListController.h"
 #import <spawn.h>
 
 extern char **environ;
 
+@interface VLMOrderListController : UIViewController
+@end
+
 @implementation VLMRootListController
+
++ (void)load {
+    (void)[VLMOrderListController class];
+}
 
 - (NSArray *)specifiers {
     if (!_specifiers) {

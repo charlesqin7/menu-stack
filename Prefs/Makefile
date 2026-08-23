@@ -8,6 +8,7 @@ VerticalMenuPrefs_PRIVATE_FRAMEWORKS = Preferences
 VerticalMenuPrefs_INSTALL_PATH = /Library/PreferenceBundles
 VerticalMenuPrefs_CFLAGS = -fobjc-arc
 # Xcode public SDKs omit Preferences.framework; resolve PSListController on-device.
-VerticalMenuPrefs_LDFLAGS = -undefined dynamic_lookup
+# -ObjC keeps VLMOrderListController in the binary so Settings can push it.
+VerticalMenuPrefs_LDFLAGS = -undefined dynamic_lookup -ObjC
 
 include $(THEOS_MAKE_PATH)/bundle.mk

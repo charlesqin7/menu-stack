@@ -20,5 +20,12 @@
 	<string>1</string>
 	<key>NSPrincipalClass</key>
 	<string>VLMRootListController</string>
+	<key>CFBundleIconFile</key>
+	<string>VerticalMenu.png</string>
+	<key>CFBundleIconFiles</key>
+	<array>
+		<string>VerticalMenu.png</string>
+		<string>icon.png</string>
+	</array>
 </dict>
 </plist>

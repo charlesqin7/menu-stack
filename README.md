@@ -53,7 +53,7 @@ Makefile                 Theos 主工程，默认 rootless
 control                  deb 元数据
 VerticalMenu.plist       注入 com.apple.UIKit（所有 UIKit 进程）
 Tweak.x                  Logos hook
-Prefs/                   设置 App 里的「纵向菜单」开关
+Prefs/                   设置 App 里的「纵向菜单」开关与菜单排序页（含图标）
 layout/Library/PreferenceLoader/Preferences/
                          VerticalMenu.plist 设置入口（含图标）
                          VerticalMenu.png / @2x / @3x
@@ -129,6 +129,11 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 2. 打开调试日志，完全杀掉 App 再开，看是否出现 `[VerticalMenu] loaded in <bundle id>`。没有日志就是没注入（ElleKit 过滤、未 respring、装到了错误的 scheme）。
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
+
+## 更新（1.0.30）
+
+- 修复设置列表里「纵向菜单」图标不显示。
+- 修复点「调整顺序」闪退：排序页改为 Settings 可推入的 Preference 控制器。
 
 ## 更新（1.0.29）
 

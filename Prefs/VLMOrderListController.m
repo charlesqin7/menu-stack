@@ -5,28 +5,49 @@ static NSString * const kVLMPrefsID = @"com.qins.verticalmenu";
 static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadPrefs";
 
 @implementation VLMOrderListController {
+    UITableView *_tableView;
     NSMutableArray<NSString *> *_order;
     NSDictionary<NSString *, NSString *> *_labels;
 }
 
 - (instancetype)init {
-    return [self initWithStyle:UITableViewStyleInsetGrouped];
+    self = [super init];
+    if (self) {
+        self.title = @"菜单排序";
+    }
+    return self;
 }
 
 - (instancetype)initForContentSize:(CGSize)size {
-    return [self initWithStyle:UITableViewStyleInsetGrouped];
+    return [self init];
+}
+
+- (void)loadView {
+    UITableViewStyle style = UITableViewStyleGrouped;
+    if (@available(iOS 13.0, *)) {
+        style = UITableViewStyleInsetGrouped;
+    }
+    _tableView = [[UITableView alloc] initWithFrame:CGRectZero style:style];
+    _tableView.delegate = self;
+    _tableView.dataSource = self;
+    _tableView.editing = YES;
+    _tableView.allowsSelectionDuringEditing = NO;
+    _tableView.allowsSelection = NO;
+    self.view = _tableView;
 }
 
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"菜单排序";
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"恢复默认"
                                                                               style:UIBarButtonItemStylePlain
                                                                              target:self
                                                                              action:@selector(resetOrder)];
     [self reloadFromPrefs];
-    [self.tableView setEditing:YES animated:NO];
-    self.tableView.allowsSelectionDuringEditing = NO;
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+    [super viewWillAppear:animated];
+    [self reloadFromPrefs];
 }
 
 - (NSDictionary *)prefsDictionary {
@@ -83,7 +104,7 @@ static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadP
         }
     }
     _labels = labels;
-    [self.tableView reloadData];
+    [_tableView reloadData];
 }
 
 - (void)writeOrderAndEnableCustomSort:(BOOL)enableCustomSort {
@@ -105,7 +126,7 @@ static NSString * const kVLMReloadNotification = @"com.qins.verticalmenu/ReloadP
 - (void)resetOrder {
     _order = [VLMDefaultOrderIDs() mutableCopy];
     [self writeOrderAndEnableCustomSort:NO];
-    [self.tableView reloadData];
+    [_tableView reloadData];
 }
 
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
