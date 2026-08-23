@@ -1032,6 +1032,23 @@ static UICollectionViewLayout *VLMEnsureVerticalListLayout(UICollectionView *col
     return replacement;
 }
 
+static void VLMExpandCollectionChain(UIView *host, UICollectionView *collectionView) {
+    UIView *current = collectionView.superview;
+    for (NSInteger depth = 0; current && current != host && depth < 6; depth++) {
+        UIView *parent = current.superview;
+        if (!parent) {
+            break;
+        }
+        BOOL managedByEffectView = [current isKindOfClass:[UIVisualEffectView class]]
+            || [NSStringFromClass(current.class) containsString:@"Backdrop"];
+        if (!managedByEffectView && !VLMFramesClose(current.frame, parent.bounds)) {
+            VLMDisableConstraints(current);
+            current.frame = parent.bounds;
+        }
+        current = parent;
+    }
+}
+
 static void VLMApplyVerticalCollectionLayout(id hostObj) {
     UIView *host = hostObj;
     if (objc_getAssociatedObject(host, kVLMApplyingKey)) {
@@ -1087,7 +1104,6 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     VLMSizeBackgroundsToHost(host);
     VLMConcealStaleChrome(host);
     VLMHideStrayBackdrops(host);
-    VLMDumpMenuHierarchy(host);
 
     collectionView.pagingEnabled = NO;
     collectionView.scrollEnabled = YES;
@@ -1106,8 +1122,11 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     collectionView.scrollIndicatorInsets = UIEdgeInsetsZero;
     collectionView.backgroundColor = VLMMenuBackgroundColor();
     collectionView.layer.cornerRadius = 14.0;
-    if (!VLMFramesClose(collectionView.frame, host.bounds)) {
-        collectionView.frame = host.bounds;
+    VLMExpandCollectionChain(host, collectionView);
+    UIView *chainParent = collectionView.superview;
+    CGRect targetFrame = chainParent && chainParent != host ? chainParent.bounds : host.bounds;
+    if (!VLMFramesClose(collectionView.frame, targetFrame)) {
+        collectionView.frame = targetFrame;
     }
     if (fabs(collectionView.contentOffset.x) > 0.5) {
         [collectionView setContentOffset:CGPointMake(0, collectionView.contentOffset.y) animated:NO];
@@ -1121,6 +1140,7 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
 
     VLMHidePagingControls(host);
     VLMScheduleArrow(host);
+    VLMDumpMenuHierarchy(host);
     objc_setAssociatedObject(host, kVLMApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
