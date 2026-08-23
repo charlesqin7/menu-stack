@@ -21,7 +21,7 @@ static const NSUInteger kVLMPaletteOption = (1 << 7);
 // UIMenuElementSizeLarge (iOS 16+) = 2
 static const NSInteger kVLMElementSizeLarge = 2;
 
-static const CGFloat kVLMMenuWidth = 280.0;
+static const CGFloat kVLMMenuWidth = 250.0;
 static const CGFloat kVLMRowHeight = 44.0;
 static const NSInteger kVLMVisibleRows = 5;
 static const CGFloat kVLMListInset = 16.0;
@@ -1725,6 +1725,24 @@ static BOOL VLMIsInsideEditMenu(id view) {
 %group EditMenuCollectionView
 
 %hook UICollectionView
+
+- (void)setContentOffset:(CGPoint)offset {
+    if (VLMEditOn() && fabs(offset.x) > 0.01
+        && VLMIsInsideEditMenu(self)
+        && [self.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]]) {
+        offset.x = 0;
+    }
+    %orig(offset);
+}
+
+- (void)setContentOffset:(CGPoint)offset animated:(BOOL)animated {
+    if (VLMEditOn() && fabs(offset.x) > 0.01
+        && VLMIsInsideEditMenu(self)
+        && [self.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]]) {
+        offset.x = 0;
+    }
+    %orig(offset, animated);
+}
 
 - (void)setCollectionViewLayout:(UICollectionViewLayout *)layout animated:(BOOL)animated {
     if (VLMEditOn() && VLMIsInsideEditMenu(self) && ![layout isKindOfClass:[VLMVerticalListLayout class]]) {
