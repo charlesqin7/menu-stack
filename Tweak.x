@@ -126,6 +126,7 @@ static const void *kVLMVerticalCollectionKey = &kVLMVerticalCollectionKey;
 static const void *kVLMConfiguredCollectionKey = &kVLMConfiguredCollectionKey;
 static const void *kVLMConfiguredSizeKey = &kVLMConfiguredSizeKey;
 static const void *kVLMConfiguredFrameKey = &kVLMConfiguredFrameKey;
+static const void *kVLMConfiguredSafeRectKey = &kVLMConfiguredSafeRectKey;
 static const void *kVLMConfiguredItemCountKey = &kVLMConfiguredItemCountKey;
 static const void *kVLMCellLayoutSizeKey = &kVLMCellLayoutSizeKey;
 static const void *kVLMSystemArrowKey = &kVLMSystemArrowKey;
@@ -768,9 +769,15 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     }
 
     NSInteger itemCount = VLMItemCount(collectionView);
-    CGSize fitted = VLMVerticalFittingSize(host, host.bounds.size);
+    CGSize preferred = VLMVerticalFittingSize(host, host.bounds.size);
+    UIWindow *window = host.window;
+    CGRect safeInWindow = CGRectZero;
+    if (window) {
+        safeInWindow = UIEdgeInsetsInsetRect(window.bounds, window.safeAreaInsets);
+    }
     NSValue *configuredSize = objc_getAssociatedObject(host, kVLMConfiguredSizeKey);
     NSValue *configuredFrame = objc_getAssociatedObject(host, kVLMConfiguredFrameKey);
+    NSValue *configuredSafeRect = objc_getAssociatedObject(host, kVLMConfiguredSafeRectKey);
     NSNumber *configuredItemCount = objc_getAssociatedObject(host, kVLMConfiguredItemCountKey);
     CGSize previousSize = configuredSize.CGSizeValue;
     BOOL stableConfiguration = objc_getAssociatedObject(host, kVLMConfiguredCollectionKey) == collectionView
@@ -778,9 +785,11 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
         && [collectionView.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]]
         && configuredSize
         && configuredFrame
+        && configuredSafeRect
         && configuredItemCount.integerValue == itemCount
-        && fabs(previousSize.width - fitted.width) < 0.5
-        && fabs(previousSize.height - fitted.height) < 0.5
+        && fabs(previousSize.width - preferred.width) < 0.5
+        && fabs(previousSize.height - preferred.height) < 0.5
+        && VLMFramesClose(configuredSafeRect.CGRectValue, safeInWindow)
         && VLMFramesClose(configuredFrame.CGRectValue, host.frame);
     if (stableConfiguration) {
         if (!collectionView.tracking && !collectionView.dragging && !collectionView.decelerating) {
@@ -790,6 +799,7 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
         return;
     }
 
+    CGSize fitted = preferred;
     objc_setAssociatedObject(collectionView, kVLMVerticalCollectionKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     if (!objc_getAssociatedObject(host, kVLMLoggedLayoutKey)) {
@@ -806,20 +816,44 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
         CGFloat minY = CGRectGetMinY(frame);
         CGFloat maxY = CGRectGetMaxY(frame);
         CGFloat anchorX = CGRectGetMidX(frame);
+        CGFloat anchorY = growDown ? minY : maxY;
         UIView *systemArrow = VLMFindArrowNear(host);
         UIView *parent = host.superview;
         if (systemArrow && parent) {
             CGRect arrowRect = [parent convertRect:systemArrow.bounds fromView:systemArrow];
             anchorX = CGRectGetMidX(arrowRect);
         }
+        if (window && parent) {
+            CGRect safeInParent = [parent convertRect:safeInWindow fromView:window];
+            CGFloat safeMinY = CGRectGetMinY(safeInParent);
+            CGFloat safeMaxY = CGRectGetMaxY(safeInParent);
+            anchorY = MIN(MAX(anchorY, safeMinY), safeMaxY);
+
+            CGFloat availableHeight = growDown
+                ? safeMaxY - anchorY
+                : anchorY - safeMinY;
+            availableHeight = MAX(0.0, availableHeight);
+            if (fitted.height > availableHeight + 0.5) {
+                CGFloat rowsHeight = availableHeight - kVLMListInset * 2.0;
+                NSInteger availableRows = MAX(0, (NSInteger)floor((rowsHeight + 0.5) / kVLMRowHeight));
+                if (availableRows > 0) {
+                    NSInteger preferredRows = MAX(1, (NSInteger)round((preferred.height - kVLMListInset * 2.0) / kVLMRowHeight));
+                    NSInteger visibleRows = MIN(preferredRows, availableRows);
+                    fitted.height = visibleRows * kVLMRowHeight + kVLMListInset * 2.0;
+                } else {
+                    fitted.height = availableHeight;
+                }
+                VLMLog(@"safe height preferred=%.1f available=%.1f fitted=%.1f growDown=%d",
+                       preferred.height, availableHeight, fitted.height, growDown);
+            }
+        }
         frame.size = fitted;
         frame.origin.x = anchorX - fitted.width * 0.5;
-        frame.origin.y = growDown ? minY : (maxY - fitted.height);
-        UIWindow *window = host.window;
+        frame.origin.y = growDown ? anchorY : (anchorY - fitted.height);
         if (window && parent) {
-            CGRect safeInWindow = UIEdgeInsetsInsetRect(window.bounds,
+            CGRect horizontalSafeInWindow = UIEdgeInsetsInsetRect(window.bounds,
                 UIEdgeInsetsMake(0, kVLMScreenInset, 0, kVLMScreenInset));
-            CGRect safeInParent = [parent convertRect:safeInWindow fromView:window];
+            CGRect safeInParent = [parent convertRect:horizontalSafeInWindow fromView:window];
             CGFloat minX = CGRectGetMinX(safeInParent);
             CGFloat maxX = CGRectGetMaxX(safeInParent) - fitted.width;
             frame.origin.x = MIN(MAX(frame.origin.x, minX), MAX(minX, maxX));
@@ -842,9 +876,11 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     collectionView.scrollEnabled = YES;
     collectionView.directionalLockEnabled = YES;
     collectionView.alwaysBounceHorizontal = NO;
-    collectionView.alwaysBounceVertical = (itemCount > kVLMVisibleRows);
+    CGFloat contentHeight = kVLMListInset * 2.0 + MAX(itemCount, 0) * kVLMRowHeight;
+    BOOL needsVerticalScroll = contentHeight > fitted.height + 0.5;
+    collectionView.alwaysBounceVertical = needsVerticalScroll;
     collectionView.showsHorizontalScrollIndicator = NO;
-    collectionView.showsVerticalScrollIndicator = (itemCount > kVLMVisibleRows);
+    collectionView.showsVerticalScrollIndicator = needsVerticalScroll;
     collectionView.clipsToBounds = YES;
     if (@available(iOS 11.0, *)) {
         collectionView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
@@ -870,8 +906,11 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     VLMHidePagingControls(host);
     VLMDumpMenuHierarchy(host);
     objc_setAssociatedObject(host, kVLMConfiguredCollectionKey, collectionView, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    objc_setAssociatedObject(host, kVLMConfiguredSizeKey, [NSValue valueWithCGSize:fitted], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(host, kVLMConfiguredSizeKey, [NSValue valueWithCGSize:preferred], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(host, kVLMConfiguredFrameKey, [NSValue valueWithCGRect:host.frame], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(host, kVLMConfiguredSafeRectKey,
+                             window ? [NSValue valueWithCGRect:safeInWindow] : nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(host, kVLMConfiguredItemCountKey, @(itemCount), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(host, kVLMApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
