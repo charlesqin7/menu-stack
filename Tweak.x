@@ -10,6 +10,16 @@
 @interface _UIEditMenuContainerView : UIView
 @end
 
+@interface VLMHorizontalGeometryRecord : NSObject
+@property (nonatomic, weak) UIView *view;
+@property (nonatomic, weak) UIView *parent;
+@property (nonatomic) CGFloat originX;
+@property (nonatomic) CGFloat width;
+@end
+
+@implementation VLMHorizontalGeometryRecord
+@end
+
 #pragma mark - Constants
 
 static NSString * const kVLMPrefsID = @"com.qins.verticalmenu";
@@ -108,7 +118,7 @@ static const void *kVLMTitleOverlayActiveKey = &kVLMTitleOverlayActiveKey;
 static const void *kVLMContainerGuardKey = &kVLMContainerGuardKey;
 static const void *kVLMCellGuardKey = &kVLMCellGuardKey;
 static const void *kVLMCollectionGeometryGuardKey = &kVLMCollectionGeometryGuardKey;
-static const void *kVLMCollectionWasScrollingKey = &kVLMCollectionWasScrollingKey;
+static const void *kVLMCollectionHorizontalRecordsKey = &kVLMCollectionHorizontalRecordsKey;
 static const void *kVLMChromeMaskKey = &kVLMChromeMaskKey;
 static const void *kVLMStrippedButtonKey = &kVLMStrippedButtonKey;
 static const void *kVLMCapturedTitleKey = &kVLMCapturedTitleKey;
@@ -666,6 +676,13 @@ static UICollectionViewLayout *VLMEnsureVerticalListLayout(UICollectionView *col
     return replacement;
 }
 
+static BOOL VLMShouldManageCollectionChainView(UIView *view) {
+    NSString *name = NSStringFromClass(view.class);
+    return ![view isKindOfClass:[UIVisualEffectView class]]
+        && ![name containsString:@"Backdrop"]
+        && ![name containsString:@"Shadow"];
+}
+
 static void VLMExpandCollectionChain(UIView *host, UICollectionView *collectionView) {
     UIView *current = collectionView;
     for (NSInteger depth = 0; current && current != host && depth < 8; depth++) {
@@ -673,11 +690,7 @@ static void VLMExpandCollectionChain(UIView *host, UICollectionView *collectionV
         if (!parent) {
             break;
         }
-        NSString *name = NSStringFromClass(current.class);
-        BOOL managedByEffectView = [current isKindOfClass:[UIVisualEffectView class]]
-            || [name containsString:@"Backdrop"]
-            || [name containsString:@"Shadow"];
-        if (!managedByEffectView) {
+        if (VLMShouldManageCollectionChainView(current)) {
             CGRect target = (parent == host) ? host.bounds : [parent convertRect:host.bounds fromView:host];
             if (target.size.width < 8.0 || target.size.height < 8.0) {
                 target = parent.bounds;
@@ -688,6 +701,45 @@ static void VLMExpandCollectionChain(UIView *host, UICollectionView *collectionV
             }
         }
         current = parent;
+    }
+}
+
+static void VLMCaptureCollectionHorizontalGeometry(UIView *host, UICollectionView *collectionView) {
+    NSMutableArray<VLMHorizontalGeometryRecord *> *records = [NSMutableArray array];
+    UIView *current = collectionView;
+    for (NSInteger depth = 0; current && current != host && depth < 8; depth++) {
+        UIView *parent = current.superview;
+        if (!parent) {
+            break;
+        }
+        if (VLMShouldManageCollectionChainView(current)) {
+            VLMHorizontalGeometryRecord *record = [[VLMHorizontalGeometryRecord alloc] init];
+            record.view = current;
+            record.parent = parent;
+            record.originX = CGRectGetMinX(current.frame);
+            record.width = CGRectGetWidth(current.frame);
+            [records addObject:record];
+        }
+        current = parent;
+    }
+    objc_setAssociatedObject(collectionView, kVLMCollectionHorizontalRecordsKey, records, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void VLMRepairCachedHorizontalGeometry(UICollectionView *collectionView) {
+    NSArray<VLMHorizontalGeometryRecord *> *records = objc_getAssociatedObject(collectionView, kVLMCollectionHorizontalRecordsKey);
+    for (VLMHorizontalGeometryRecord *record in records) {
+        UIView *view = record.view;
+        if (!view || view.superview != record.parent) {
+            continue;
+        }
+        CGRect frame = view.frame;
+        if (fabs(CGRectGetMinX(frame) - record.originX) < 0.5
+            && fabs(CGRectGetWidth(frame) - record.width) < 0.5) {
+            continue;
+        }
+        frame.origin.x = record.originX;
+        frame.size.width = record.width;
+        view.frame = frame;
     }
 }
 
@@ -708,6 +760,7 @@ static void VLMRepairCollectionGeometry(UIView *host, UICollectionView *collecti
         VLMDisableConstraints(collectionView);
         collectionView.frame = targetFrame;
     }
+    VLMCaptureCollectionHorizontalGeometry(host, collectionView);
 }
 
 static void VLMApplyVerticalCollectionLayout(id hostObj) {
@@ -793,8 +846,6 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     VLMSizeBackgroundsToHost(host);
     VLMConcealStaleChrome(host);
     VLMHideStrayBackdrops(host);
-    host.backgroundColor = VLMMenuBackgroundColor();
-    host.layer.cornerRadius = 14.0;
 
     collectionView.pagingEnabled = NO;
     collectionView.scrollEnabled = YES;
@@ -1480,31 +1531,18 @@ static void VLMRelayoutVisibleCells(id host) {
 %hook UICollectionView
 
 - (void)layoutSubviews {
+    BOOL repairWidth = VLMEditOn()
+        && objc_getAssociatedObject(self, kVLMVerticalCollectionKey)
+        && [self.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]]
+        && !objc_getAssociatedObject(self, kVLMCollectionGeometryGuardKey);
+    if (repairWidth) {
+        objc_setAssociatedObject(self, kVLMCollectionGeometryGuardKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        VLMRepairCachedHorizontalGeometry(self);
+    }
     %orig;
-    if (!VLMEditOn()
-        || !objc_getAssociatedObject(self, kVLMVerticalCollectionKey)
-        || ![self.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]]
-        || objc_getAssociatedObject(self, kVLMCollectionGeometryGuardKey)) {
-        return;
+    if (repairWidth) {
+        objc_setAssociatedObject(self, kVLMCollectionGeometryGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    BOOL scrolling = self.tracking || self.dragging || self.decelerating;
-    if (scrolling) {
-        if (!objc_getAssociatedObject(self, kVLMCollectionWasScrollingKey)) {
-            objc_setAssociatedObject(self, kVLMCollectionWasScrollingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        }
-        return;
-    }
-    if (!objc_getAssociatedObject(self, kVLMCollectionWasScrollingKey)) {
-        return;
-    }
-    objc_setAssociatedObject(self, kVLMCollectionWasScrollingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    UIView *host = VLMEnclosingEditMenuList(self);
-    if (!host) {
-        return;
-    }
-    objc_setAssociatedObject(self, kVLMCollectionGeometryGuardKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    VLMRepairCollectionGeometry(host, self);
-    objc_setAssociatedObject(self, kVLMCollectionGeometryGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 
 - (void)setContentOffset:(CGPoint)offset {
