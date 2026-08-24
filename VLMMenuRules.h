@@ -31,6 +31,8 @@ BOOL VLMRulesPolicyHasOrdering(NSDictionary *_Nullable policy);
 NSArray *VLMRulesApplyPolicyToItems(NSArray *items,
                                     NSDictionary *_Nullable policy,
                                     NSString *_Nullable (^_Nullable itemID)(id item));
+NSArray<NSNumber *> *VLMRulesVisibleOriginalIndexes(NSArray<NSString *> *itemIDs,
+                                                     NSDictionary *_Nullable policy);
 
 NSArray *VLMRulesApplyToItems(NSArray *items,
                               BOOL (^_Nullable isHidden)(id item),

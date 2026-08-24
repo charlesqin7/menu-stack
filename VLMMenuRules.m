@@ -411,6 +411,36 @@ NSArray *VLMRulesApplyPolicyToItems(NSArray *items,
     return unchanged ? items : result;
 }
 
+NSArray<NSNumber *> *VLMRulesVisibleOriginalIndexes(NSArray<NSString *> *itemIDs,
+                                                     NSDictionary *policy) {
+    if (![itemIDs isKindOfClass:[NSArray class]] || itemIDs.count == 0) {
+        return @[];
+    }
+    NSMutableArray<NSDictionary *> *uniqueItems = [NSMutableArray arrayWithCapacity:itemIDs.count];
+    NSMutableSet<NSString *> *seen = [NSMutableSet set];
+    [itemIDs enumerateObjectsUsingBlock:^(id rawID, NSUInteger index, BOOL *stop) {
+        (void)stop;
+        NSString *itemID = [rawID isKindOfClass:[NSString class]] ? rawID : @"";
+        // A known semantic action may be exposed twice by UIKit (for example,
+        // two Paste commands backed by different internal objects). Keep the
+        // first real action. Empty identities remain distinct and visible.
+        if (itemID.length > 0 && [seen containsObject:itemID]) {
+            return;
+        }
+        if (itemID.length > 0) {
+            [seen addObject:itemID];
+        }
+        [uniqueItems addObject:@{
+            @"id": itemID,
+            @"index": @(index),
+        }];
+    }];
+    NSArray<NSDictionary *> *visible = VLMRulesApplyPolicyToItems(uniqueItems, policy, ^NSString *(id rawItem) {
+        return [rawItem isKindOfClass:[NSDictionary class]] ? rawItem[@"id"] : nil;
+    });
+    return [visible valueForKey:@"index"] ?: @[];
+}
+
 static NSInteger VLMRulesRank(NSString *itemID, NSArray<NSString *> *orderIDs) {
     if (itemID.length == 0 || orderIDs.count == 0) {
         return NSIntegerMax;
