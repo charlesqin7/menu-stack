@@ -6,4 +6,3 @@ Maintainer: Charles Qin <qinsheng77@gmail.com>
 Author: Charles Qin <qinsheng77@gmail.com>
 Section: Tweaks
 Depends: firmware (>= 16.0), mobilesubstrate (>= 0.9.5000) | org.coolstar.libhooker | ellekit
-

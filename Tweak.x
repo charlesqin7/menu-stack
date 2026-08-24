@@ -3693,4 +3693,3 @@ static void VLMIncomingPrefsChanged(CFNotificationCenterRef center, void *observ
     VLMLog(@"loaded in %@ enabled=%d context=%d edit=%d debug=%d list=%d registry=%lu",
            bundleID, gEnabled, gContextMenus, gEditMenus, gDebug, hookedList, (unsigned long)gRegistry.count);
 }
-
