@@ -4,6 +4,11 @@
 
 这不是越狱工具，只是安装到你自己设备上的 UI 插件。需要本机已经能用 Sileo / Zebra 装 tweak，并且有 ElleKit、Substitute 或 Cydia Substrate。
 
+## 1.0.30 更新
+
+- 系统箭头的上下方向改为相对菜单本身判断；菜单缩窄时围绕系统箭头水平居中，并只在屏幕安全宽度内约束菜单本体，不再移动外层系统菜单容器。
+- 菜单、内部列表和祖先遮罩统一使用相同左右边界；遮罩只在纵向容纳系统箭头，消除菜单右侧残留的灰色竖块。
+
 ## 先分清你看到的是哪一种菜单
 
 iOS 16/17 里「长按出现一排按钮」其实有三条互不相干的渲染路径，改错类就不会生效：
@@ -37,8 +42,8 @@ iOS 16/17 里「长按出现一排按钮」其实有三条互不相干的渲染�
 
 对 `_UIEditMenuListView`：
 
-1. hook `sizeThatFits:` / `intrinsicContentSize`，宽 280pt、行高 44pt；窗口高度最多 5 行，多出来的条目在 collection view 里上下滑。
-2. 用当前选区矩形把菜单贴到文字下一行，并把顶部箭头移到选区中点；选区靠右时菜单贴右边、箭头仍对准选中的字。
+1. hook `sizeThatFits:` / `intrinsicContentSize`，宽 250pt、行高 44pt；窗口高度最多 5 行，多出来的条目在 collection view 里上下滑。
+2. 保留 UIKit 的系统默认箭头，根据箭头在菜单上方还是下方保留对应的菜单边缘；缩窄菜单宽度时以箭头中点为水平锚点。
 3. 菜单上屏后再改内部 `UICollectionView`：系统用的是横向/分页 layout（把容器拉高只会变成「很高的几列」），所以换成自己的 `VLMVerticalListLayout`，每行 44pt 全宽。
 4. 拦截 `setCollectionViewLayout:`，避免 UIKit 下一拍又把横向 layout 设回去。
 5. 关掉 paging，隐藏 `_UIEditMenuPageButton`；没有系统图标的条目显示默认 `ellipsis.circle` 图标，保证文字左对齐。

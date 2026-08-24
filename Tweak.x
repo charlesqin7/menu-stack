@@ -101,7 +101,6 @@ static BOOL VLMEditOn(void) {
 static const void *kVLMApplyingKey = &kVLMApplyingKey;
 static const void *kVLMLayoutGuardKey = &kVLMLayoutGuardKey;
 static const void *kVLMLoggedLayoutKey = &kVLMLoggedLayoutKey;
-static const void *kVLMGrowDownKey = &kVLMGrowDownKey;
 static const void *kVLMFallbackIconKey = &kVLMFallbackIconKey;
 static const void *kVLMTitleSlotKey = &kVLMTitleSlotKey;
 static const void *kVLMCoverKey = &kVLMCoverKey;
@@ -365,35 +364,15 @@ static UIView *VLMFindArrowNear(UIView *host) {
     return nil;
 }
 
-static UIView *VLMOutermostEditMenuView(UIView *view) {
-    UIView *result = view;
-    UIView *current = view.superview;
-    for (NSInteger depth = 0; current && depth < 6; depth++) {
-        if ([current isKindOfClass:[UIWindow class]]) {
-            break;
-        }
-        NSString *name = NSStringFromClass(current.class);
-        if ([name containsString:@"EditMenu"] || [name containsString:@"Callout"] || [name containsString:@"Popover"]) {
-            result = current;
-        }
-        current = current.superview;
-    }
-    return result;
-}
-
 static BOOL VLMShouldGrowDownward(UIView *host) {
-    NSNumber *cached = objc_getAssociatedObject(host, kVLMGrowDownKey);
-    if (cached) {
-        return cached.boolValue;
-    }
-
     BOOL growDown = NO;
     UIView *arrow = VLMFindArrowNear(host);
     UIView *ref = host.superview ?: host;
     if (arrow) {
         CGRect arrowRect = [arrow convertRect:arrow.bounds toView:ref];
-        growDown = CGRectGetMidY(arrowRect) <= CGRectGetMidY(ref.bounds) + 4.0;
-        VLMLog(@"arrow %@ midY=%.1f refMid=%.1f growDown=%d", NSStringFromClass(arrow.class), CGRectGetMidY(arrowRect), CGRectGetMidY(ref.bounds), growDown);
+        CGRect hostRect = (ref == host) ? host.bounds : host.frame;
+        growDown = CGRectGetMidY(arrowRect) <= CGRectGetMidY(hostRect);
+        VLMLog(@"arrow %@ midY=%.1f menuMid=%.1f growDown=%d", NSStringFromClass(arrow.class), CGRectGetMidY(arrowRect), CGRectGetMidY(hostRect), growDown);
     } else {
         UIWindow *window = host.window;
         if (window) {
@@ -402,8 +381,6 @@ static BOOL VLMShouldGrowDownward(UIView *host) {
             growDown = onScreen.origin.y < topBand;
         }
     }
-
-    objc_setAssociatedObject(host, kVLMGrowDownKey, @(growDown), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return growDown;
 }
 
@@ -467,7 +444,12 @@ static void VLMConcealStaleChrome(UIView *host) {
     UIView *systemArrow = VLMFindArrowNear(host);
     if (systemArrow && systemArrow.window == host.window && !CGRectIsEmpty(systemArrow.bounds)) {
         CGRect arrowRect = [parent convertRect:systemArrow.bounds fromView:systemArrow];
-        rectInAncestor = CGRectUnion(rectInAncestor, arrowRect);
+        CGFloat minY = MIN(CGRectGetMinY(rectInAncestor), CGRectGetMinY(arrowRect));
+        CGFloat maxY = MAX(CGRectGetMaxY(rectInAncestor), CGRectGetMaxY(arrowRect));
+        rectInAncestor = CGRectMake(CGRectGetMinX(host.frame),
+                                    minY,
+                                    CGRectGetWidth(host.frame),
+                                    maxY - minY);
     }
 
     UIView *ancestor = parent;
@@ -596,40 +578,6 @@ static UIView *VLMFindEditMenuList(UIView *view, NSInteger depth) {
         }
     }
     return nil;
-}
-
-static void VLMKeepOnScreen(UIView *view) {
-    UIView *chrome = VLMOutermostEditMenuView(view);
-    UIWindow *window = chrome.window;
-    if (!window) {
-        return;
-    }
-    CGRect onScreen = [chrome convertRect:chrome.bounds toView:window];
-    CGFloat topInset = MAX(window.safeAreaInsets.top, 20.0) + 6.0;
-    CGFloat bottomInset = window.safeAreaInsets.bottom + kVLMScreenInset;
-    CGFloat dx = 0;
-    CGFloat dy = 0;
-    if (onScreen.origin.x < kVLMScreenInset) {
-        dx = kVLMScreenInset - onScreen.origin.x;
-    }
-    CGFloat maxX = window.bounds.size.width - kVLMScreenInset;
-    if (CGRectGetMaxX(onScreen) + dx > maxX) {
-        dx = maxX - CGRectGetMaxX(onScreen);
-    }
-    if (onScreen.origin.y < topInset) {
-        dy = topInset - onScreen.origin.y;
-    }
-    CGFloat maxY = window.bounds.size.height - bottomInset;
-    if (CGRectGetMaxY(onScreen) + dy > maxY) {
-        dy = maxY - CGRectGetMaxY(onScreen);
-        if (onScreen.origin.y + dy < topInset) {
-            dy = topInset - onScreen.origin.y;
-        }
-    }
-    if (dx == 0 && dy == 0) {
-        return;
-    }
-    chrome.frame = CGRectOffset(chrome.frame, dx, dy);
 }
 
 static CGSize VLMVerticalFittingSize(id host, CGSize orig) {
@@ -787,16 +735,30 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     if (VLMIsOnScreen(host)) {
         BOOL growDown = VLMShouldGrowDownward(host);
         CGRect frame = host.frame;
-        CGFloat minX = CGRectGetMinX(frame);
         CGFloat minY = CGRectGetMinY(frame);
         CGFloat maxY = CGRectGetMaxY(frame);
+        CGFloat anchorX = CGRectGetMidX(frame);
+        UIView *systemArrow = VLMFindArrowNear(host);
+        UIView *parent = host.superview;
+        if (systemArrow && parent) {
+            CGRect arrowRect = [parent convertRect:systemArrow.bounds fromView:systemArrow];
+            anchorX = CGRectGetMidX(arrowRect);
+        }
         frame.size = fitted;
-        frame.origin.x = minX;
+        frame.origin.x = anchorX - fitted.width * 0.5;
         frame.origin.y = growDown ? minY : (maxY - fitted.height);
+        UIWindow *window = host.window;
+        if (window && parent) {
+            CGRect safeInWindow = UIEdgeInsetsInsetRect(window.bounds,
+                UIEdgeInsetsMake(0, kVLMScreenInset, 0, kVLMScreenInset));
+            CGRect safeInParent = [parent convertRect:safeInWindow fromView:window];
+            CGFloat minX = CGRectGetMinX(safeInParent);
+            CGFloat maxX = CGRectGetMaxX(safeInParent) - fitted.width;
+            frame.origin.x = MIN(MAX(frame.origin.x, minX), MAX(minX, maxX));
+        }
         if (!VLMFramesClose(host.frame, frame) || !VLMFramesClose(host.bounds, CGRectMake(0, 0, fitted.width, fitted.height))) {
             host.bounds = CGRectMake(0, 0, fitted.width, fitted.height);
             host.frame = frame;
-            VLMKeepOnScreen(host);
         }
         VLMConcealStaleChrome(host);
         VLMLog(@"system anchor growDown=%d frame=%@", growDown, NSStringFromCGRect(host.frame));
