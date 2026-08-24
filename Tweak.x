@@ -10,14 +10,11 @@
 @interface _UIEditMenuContainerView : UIView
 @end
 
-@interface VLMHorizontalGeometryRecord : NSObject
+@interface VLMWeakViewReference : NSObject
 @property (nonatomic, weak) UIView *view;
-@property (nonatomic, weak) UIView *parent;
-@property (nonatomic) CGFloat originX;
-@property (nonatomic) CGFloat width;
 @end
 
-@implementation VLMHorizontalGeometryRecord
+@implementation VLMWeakViewReference
 @end
 
 #pragma mark - Constants
@@ -118,7 +115,7 @@ static const void *kVLMTitleOverlayActiveKey = &kVLMTitleOverlayActiveKey;
 static const void *kVLMContainerGuardKey = &kVLMContainerGuardKey;
 static const void *kVLMCellGuardKey = &kVLMCellGuardKey;
 static const void *kVLMCollectionGeometryGuardKey = &kVLMCollectionGeometryGuardKey;
-static const void *kVLMCollectionHorizontalRecordsKey = &kVLMCollectionHorizontalRecordsKey;
+static const void *kVLMCollectionHostReferenceKey = &kVLMCollectionHostReferenceKey;
 static const void *kVLMChromeMaskKey = &kVLMChromeMaskKey;
 static const void *kVLMStrippedButtonKey = &kVLMStrippedButtonKey;
 static const void *kVLMCapturedTitleKey = &kVLMCapturedTitleKey;
@@ -690,6 +687,9 @@ static void VLMExpandCollectionChain(UIView *host, UICollectionView *collectionV
         if (!parent) {
             break;
         }
+        if (current != collectionView) {
+            current.clipsToBounds = NO;
+        }
         if (VLMShouldManageCollectionChainView(current)) {
             CGRect target = (parent == host) ? host.bounds : [parent convertRect:host.bounds fromView:host];
             if (target.size.width < 8.0 || target.size.height < 8.0) {
@@ -704,43 +704,34 @@ static void VLMExpandCollectionChain(UIView *host, UICollectionView *collectionV
     }
 }
 
-static void VLMCaptureCollectionHorizontalGeometry(UIView *host, UICollectionView *collectionView) {
-    NSMutableArray<VLMHorizontalGeometryRecord *> *records = [NSMutableArray array];
-    UIView *current = collectionView;
-    for (NSInteger depth = 0; current && current != host && depth < 8; depth++) {
-        UIView *parent = current.superview;
-        if (!parent) {
-            break;
-        }
-        if (VLMShouldManageCollectionChainView(current)) {
-            VLMHorizontalGeometryRecord *record = [[VLMHorizontalGeometryRecord alloc] init];
-            record.view = current;
-            record.parent = parent;
-            record.originX = CGRectGetMinX(current.frame);
-            record.width = CGRectGetWidth(current.frame);
-            [records addObject:record];
-        }
-        current = parent;
+static void VLMAttachCollectionHost(UIView *host, UICollectionView *collectionView) {
+    VLMWeakViewReference *reference = objc_getAssociatedObject(collectionView, kVLMCollectionHostReferenceKey);
+    if (!reference) {
+        reference = [[VLMWeakViewReference alloc] init];
+        objc_setAssociatedObject(collectionView, kVLMCollectionHostReferenceKey, reference, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
-    objc_setAssociatedObject(collectionView, kVLMCollectionHorizontalRecordsKey, records, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    reference.view = host;
 }
 
-static void VLMRepairCachedHorizontalGeometry(UICollectionView *collectionView) {
-    NSArray<VLMHorizontalGeometryRecord *> *records = objc_getAssociatedObject(collectionView, kVLMCollectionHorizontalRecordsKey);
-    for (VLMHorizontalGeometryRecord *record in records) {
-        UIView *view = record.view;
-        if (!view || view.superview != record.parent) {
-            continue;
-        }
-        CGRect frame = view.frame;
-        if (fabs(CGRectGetMinX(frame) - record.originX) < 0.5
-            && fabs(CGRectGetWidth(frame) - record.width) < 0.5) {
-            continue;
-        }
-        frame.origin.x = record.originX;
-        frame.size.width = record.width;
-        view.frame = frame;
+static void VLMRepairCollectionHorizontalGeometry(UICollectionView *collectionView) {
+    VLMWeakViewReference *reference = objc_getAssociatedObject(collectionView, kVLMCollectionHostReferenceKey);
+    UIView *host = reference.view;
+    UIView *parent = collectionView.superview;
+    if (!host || !parent) {
+        return;
     }
+    CGRect target = (parent == host) ? host.bounds : [parent convertRect:host.bounds fromView:host];
+    if (target.size.width < 8.0) {
+        target = parent.bounds;
+    }
+    CGRect frame = collectionView.frame;
+    if (fabs(CGRectGetMinX(frame) - CGRectGetMinX(target)) < 0.5
+        && fabs(CGRectGetWidth(frame) - CGRectGetWidth(target)) < 0.5) {
+        return;
+    }
+    frame.origin.x = target.origin.x;
+    frame.size.width = target.size.width;
+    collectionView.frame = frame;
 }
 
 static void VLMRepairCollectionGeometry(UIView *host, UICollectionView *collectionView) {
@@ -760,7 +751,7 @@ static void VLMRepairCollectionGeometry(UIView *host, UICollectionView *collecti
         VLMDisableConstraints(collectionView);
         collectionView.frame = targetFrame;
     }
-    VLMCaptureCollectionHorizontalGeometry(host, collectionView);
+    VLMAttachCollectionHost(host, collectionView);
 }
 
 static void VLMApplyVerticalCollectionLayout(id hostObj) {
@@ -1051,48 +1042,6 @@ static UIView *VLMEnclosingCollectionCell(UIView *view) {
     return nil;
 }
 
-static UIView *VLMEnclosingEditMenuList(UIView *view) {
-    static Class listClass;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        listClass = objc_getClass("_UIEditMenuListView");
-    });
-    if (!listClass) {
-        return nil;
-    }
-    UIView *current = view;
-    for (NSInteger depth = 0; current && depth < 16; depth++) {
-        if ([current isKindOfClass:listClass]) {
-            return current;
-        }
-        current = current.superview;
-    }
-    return nil;
-}
-
-// Place the icon so its left edge is always page-gutter + icon inset
-// from the list platter, whether or not UIKit reserved space for the
-// hidden page buttons. Copy mode (wrapper at x=22) keeps icon-at-16;
-// edit mode (flush) shifts the icon by that same 22pt.
-static CGFloat VLMAlignedIconLeft(UIView *cell) {
-    UIView *list = VLMEnclosingEditMenuList(cell);
-    if (!list) {
-        return kVLMIconLeft + kVLMPageGutter;
-    }
-    CGFloat cellMinX = [cell convertPoint:CGPointZero toView:list].x;
-    if (cellMinX != cellMinX || fabs(cellMinX) > 500.0) {
-        return kVLMIconLeft + kVLMPageGutter;
-    }
-    CGFloat iconLeft = (kVLMPageGutter + kVLMIconLeft) - cellMinX;
-    if (iconLeft < 8.0) {
-        return 8.0;
-    }
-    if (iconLeft > 48.0) {
-        return 48.0;
-    }
-    return iconLeft;
-}
-
 static void VLMFadeNativeLabels(UIView *view, UIView *skipA, UIView *skipB) {
     if (!view || view == skipA || view == skipB) {
         return;
@@ -1302,7 +1251,7 @@ static void VLMRelayoutCell(UIView *cell, BOOL scrolling) {
     cell.layoutMargins = UIEdgeInsetsZero;
     content.layoutMargins = UIEdgeInsetsZero;
 
-    CGFloat iconLeft = VLMAlignedIconLeft(cell);
+    CGFloat iconLeft = kVLMPageGutter + kVLMIconLeft;
     CGFloat textX = iconLeft + kVLMIconSize + kVLMIconTextGap;
     CGRect iconRect = CGRectMake(iconLeft, (content.bounds.size.height - kVLMIconSize) / 2.0, kVLMIconSize, kVLMIconSize);
     CGRect titleRect = CGRectMake(textX, 0, MAX(40.0, content.bounds.size.width - textX - 14.0), content.bounds.size.height);
@@ -1537,7 +1486,7 @@ static void VLMRelayoutVisibleCells(id host) {
         && !objc_getAssociatedObject(self, kVLMCollectionGeometryGuardKey);
     if (repairWidth) {
         objc_setAssociatedObject(self, kVLMCollectionGeometryGuardKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-        VLMRepairCachedHorizontalGeometry(self);
+        VLMRepairCollectionHorizontalGeometry(self);
     }
     %orig;
     if (repairWidth) {
