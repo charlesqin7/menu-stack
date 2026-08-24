@@ -107,6 +107,7 @@ static const void *kVLMCoverKey = &kVLMCoverKey;
 static const void *kVLMTitleOverlayActiveKey = &kVLMTitleOverlayActiveKey;
 static const void *kVLMContainerGuardKey = &kVLMContainerGuardKey;
 static const void *kVLMCellGuardKey = &kVLMCellGuardKey;
+static const void *kVLMCollectionGeometryGuardKey = &kVLMCollectionGeometryGuardKey;
 static const void *kVLMChromeMaskKey = &kVLMChromeMaskKey;
 static const void *kVLMStrippedButtonKey = &kVLMStrippedButtonKey;
 static const void *kVLMCapturedTitleKey = &kVLMCapturedTitleKey;
@@ -689,6 +690,25 @@ static void VLMExpandCollectionChain(UIView *host, UICollectionView *collectionV
     }
 }
 
+static void VLMRepairCollectionGeometry(UIView *host, UICollectionView *collectionView) {
+    if (!host || !collectionView) {
+        return;
+    }
+    VLMExpandCollectionChain(host, collectionView);
+    UIView *chainParent = collectionView.superview;
+    CGRect targetFrame = host.bounds;
+    if (chainParent && chainParent != host) {
+        targetFrame = [chainParent convertRect:host.bounds fromView:host];
+        if (targetFrame.size.width < 8.0 || targetFrame.size.height < 8.0) {
+            targetFrame = chainParent.bounds;
+        }
+    }
+    if (!VLMFramesClose(collectionView.frame, targetFrame)) {
+        VLMDisableConstraints(collectionView);
+        collectionView.frame = targetFrame;
+    }
+}
+
 static void VLMApplyVerticalCollectionLayout(id hostObj) {
     UIView *host = hostObj;
     if (objc_getAssociatedObject(host, kVLMApplyingKey)) {
@@ -718,6 +738,7 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
         && fabs(previousSize.height - fitted.height) < 0.5
         && VLMFramesClose(configuredFrame.CGRectValue, host.frame);
     if (stableConfiguration) {
+        VLMRepairCollectionGeometry(host, collectionView);
         objc_setAssociatedObject(host, kVLMApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
@@ -788,18 +809,7 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     collectionView.scrollIndicatorInsets = UIEdgeInsetsZero;
     collectionView.backgroundColor = VLMMenuBackgroundColor();
     collectionView.layer.cornerRadius = 14.0;
-    VLMExpandCollectionChain(host, collectionView);
-    UIView *chainParent = collectionView.superview;
-    CGRect targetFrame = host.bounds;
-    if (chainParent && chainParent != host) {
-        targetFrame = [chainParent convertRect:host.bounds fromView:host];
-        if (targetFrame.size.width < 8.0 || targetFrame.size.height < 8.0) {
-            targetFrame = chainParent.bounds;
-        }
-    }
-    if (!VLMFramesClose(collectionView.frame, targetFrame)) {
-        collectionView.frame = targetFrame;
-    }
+    VLMRepairCollectionGeometry(host, collectionView);
     if (fabs(collectionView.contentOffset.x) > 0.01) {
         [collectionView setContentOffset:CGPointMake(0, collectionView.contentOffset.y) animated:NO];
     }
@@ -1463,6 +1473,23 @@ static void VLMRelayoutVisibleCells(id host) {
 %group EditMenuCollectionView
 
 %hook UICollectionView
+
+- (void)layoutSubviews {
+    %orig;
+    if (!VLMEditOn()
+        || !objc_getAssociatedObject(self, kVLMVerticalCollectionKey)
+        || ![self.collectionViewLayout isKindOfClass:[VLMVerticalListLayout class]]
+        || objc_getAssociatedObject(self, kVLMCollectionGeometryGuardKey)) {
+        return;
+    }
+    UIView *host = VLMEnclosingEditMenuList(self);
+    if (!host) {
+        return;
+    }
+    objc_setAssociatedObject(self, kVLMCollectionGeometryGuardKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    VLMRepairCollectionGeometry(host, self);
+    objc_setAssociatedObject(self, kVLMCollectionGeometryGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 
 - (void)setContentOffset:(CGPoint)offset {
     if (VLMEditOn() && fabs(offset.x) > 0.01
