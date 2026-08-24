@@ -143,6 +143,33 @@ static void TestV2SparseOrdering(void) {
                    @"supports ordered first and last pins");
 }
 
+static void TestVisualLayoutPolicyMapping(void) {
+    NSDictionary *global = @{
+        @"visibility": @{@"copy": VLMRulesVisibilityHide},
+        @"relative": @[@"selectAll", @"paste"],
+        @"orderMode": VLMRulesOrderModeCustom,
+    };
+    NSDictionary *resolved = VLMRulesResolvedPolicy(global, @{
+        @"orderMode": VLMRulesOrderModeInherit,
+    });
+    NSArray<NSNumber *> *indexes = VLMRulesVisibleOriginalIndexes(
+        @[@"copy", @"paste", @"paste", @"selectAll", @""],
+        resolved
+    );
+    VLMAssertEqual(indexes,
+                   (@[@3, @1, @4]),
+                   @"applies inherited hiding and ordering while removing a duplicate semantic action");
+
+    resolved = VLMRulesResolvedPolicy(global, @{
+        @"visibility": @{@"copy": VLMRulesVisibilityShow},
+        @"orderMode": VLMRulesOrderModeSystem,
+    });
+    indexes = VLMRulesVisibleOriginalIndexes(@[@"copy", @"paste", @"paste"], resolved);
+    VLMAssertEqual(indexes,
+                   (@[@0, @1]),
+                   @"an app show override restores a global hidden item without restoring duplicates");
+}
+
 static void TestV2PolicySanitizing(void) {
     NSDictionary *policy = VLMRulesNormalizedPolicy(@{
         @"visibility": @{@"copy": @42, @42: VLMRulesVisibilityHide},
@@ -405,6 +432,7 @@ int main(void) {
         TestEffectiveRules();
         TestV2PolicyResolution();
         TestV2SparseOrdering();
+        TestVisualLayoutPolicyMapping();
         TestV2PolicySanitizing();
         TestLegacyProfileMerge();
         TestV2RegistryUnion();

@@ -108,6 +108,12 @@ static const void *kVLMVisibilityItemIDKey = &kVLMVisibilityItemIDKey;
             [ids addObject:itemID];
         }
     };
+    void (^appendID)(NSString *) = ^(NSString *itemID) {
+        if (![itemID isKindOfClass:[NSString class]] || itemID.length == 0 || [seen containsObject:itemID]) return;
+        [seen addObject:itemID];
+        [ids addObject:itemID];
+        if (!self->_labels[itemID]) self->_labels[itemID] = VLMLabelForItemID(itemID) ?: itemID;
+    };
     if ([self isGlobal]) {
         for (NSDictionary *item in VLMCatalogItems()) appendItem(item);
         NSArray<NSDictionary *> *registry = VLMSanitizeRegistryRecords(prefs[VLMMenuRegistryKey]);
@@ -122,16 +128,26 @@ static const void *kVLMVisibilityItemIDKey = &kVLMVisibilityItemIDKey;
             }
         }
     } else {
+        // Standard edit actions are state-dependent: Paste, Replace, Lookup,
+        // etc. may not all be present in the one menu snapshot that created
+        // the App record. Keep them configurable and combine them with every
+        // dynamically observed App-specific action.
+        if ([_kind isEqualToString:VLMMenuKindEdit]) {
+            for (NSDictionary *item in VLMCatalogItems()) appendItem(item);
+        }
         NSArray<NSDictionary *> *items = [_registryRecord[@"items"] isKindOfClass:[NSArray class]]
             ? _registryRecord[@"items"] : @[];
         for (NSDictionary *item in items) appendItem(item);
     }
-    for (NSString *field in @[@"first", @"relative", @"last"]) {
-        for (NSString *itemID in policy[field] ?: @[]) {
-            if (![seen containsObject:itemID]) {
-                [seen addObject:itemID];
-                [ids addObject:itemID];
-            }
+    NSArray<NSDictionary *> *policySources = [self isGlobal]
+        ? @[policy ?: @{}]
+        : @[_globalPolicy ?: @{}, policy ?: @{}];
+    for (NSDictionary *sourcePolicy in policySources) {
+        NSDictionary *visibility = [sourcePolicy[@"visibility"] isKindOfClass:[NSDictionary class]]
+            ? sourcePolicy[@"visibility"] : @{};
+        for (NSString *itemID in visibility) appendID(itemID);
+        for (NSString *field in @[@"first", @"relative", @"last"]) {
+            for (NSString *itemID in sourcePolicy[field] ?: @[]) appendID(itemID);
         }
     }
     return ids;
