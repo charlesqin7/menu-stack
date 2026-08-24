@@ -108,6 +108,7 @@ static const void *kVLMTitleOverlayActiveKey = &kVLMTitleOverlayActiveKey;
 static const void *kVLMContainerGuardKey = &kVLMContainerGuardKey;
 static const void *kVLMCellGuardKey = &kVLMCellGuardKey;
 static const void *kVLMCollectionGeometryGuardKey = &kVLMCollectionGeometryGuardKey;
+static const void *kVLMCollectionWasScrollingKey = &kVLMCollectionWasScrollingKey;
 static const void *kVLMChromeMaskKey = &kVLMChromeMaskKey;
 static const void *kVLMStrippedButtonKey = &kVLMStrippedButtonKey;
 static const void *kVLMCapturedTitleKey = &kVLMCapturedTitleKey;
@@ -738,7 +739,9 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
         && fabs(previousSize.height - fitted.height) < 0.5
         && VLMFramesClose(configuredFrame.CGRectValue, host.frame);
     if (stableConfiguration) {
-        VLMRepairCollectionGeometry(host, collectionView);
+        if (!collectionView.tracking && !collectionView.dragging && !collectionView.decelerating) {
+            VLMRepairCollectionGeometry(host, collectionView);
+        }
         objc_setAssociatedObject(host, kVLMApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
     }
@@ -790,6 +793,8 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     VLMSizeBackgroundsToHost(host);
     VLMConcealStaleChrome(host);
     VLMHideStrayBackdrops(host);
+    host.backgroundColor = VLMMenuBackgroundColor();
+    host.layer.cornerRadius = 14.0;
 
     collectionView.pagingEnabled = NO;
     collectionView.scrollEnabled = YES;
@@ -1482,6 +1487,17 @@ static void VLMRelayoutVisibleCells(id host) {
         || objc_getAssociatedObject(self, kVLMCollectionGeometryGuardKey)) {
         return;
     }
+    BOOL scrolling = self.tracking || self.dragging || self.decelerating;
+    if (scrolling) {
+        if (!objc_getAssociatedObject(self, kVLMCollectionWasScrollingKey)) {
+            objc_setAssociatedObject(self, kVLMCollectionWasScrollingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        return;
+    }
+    if (!objc_getAssociatedObject(self, kVLMCollectionWasScrollingKey)) {
+        return;
+    }
+    objc_setAssociatedObject(self, kVLMCollectionWasScrollingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     UIView *host = VLMEnclosingEditMenuList(self);
     if (!host) {
         return;
