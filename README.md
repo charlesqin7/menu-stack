@@ -158,6 +158,13 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 3. 文本条仍是横的：在设备上 class-dump / Cycript / Frida 看 `UIKitCore` 里实际类名是不是还叫 `_UIEditMenuListView`。若改名，把 `Tweak.x` 里的 `%hook` 类名换成新的即可。
 4. 某个 App 崩溃：先在设置里关掉「文本选择菜单」或「上下文菜单」定位是哪一层 hook；私有 layout 被替换时偶发不兼容，优先关 EditMenus。
 
+## 更新（1.0.53）
+
+- 建立统一的菜单项快照和策略版本，按完整 command 模型解析屏幕外项目，并在当前列表路径兼容旧版 `custom:` / 标题 ID，修复全局隐藏在 App 继承时无法命中的问题。
+- 策略变更会立即失效已有菜单快照；隐藏和重复项同时作用于布局属性与实际 cell，保证继承、去重、排序和点击索引一致。
+- 停止把 host 坐标转换后反复写回私有 wrapper，滚动过程中只改变纵向内容位置，避免到顶/到底时整列向左移动。
+- 每个菜单行使用单一视觉表面绘制图标和标题，覆盖 UIKit 后续重建的原生子视图，消除重复“粘贴”和图标文字重叠。
+
 ## 更新（1.0.52）
 
 - 不重新启用会影响 App 启动的全局 `UIMenu` / delegate 钩子；文本选择菜单改在纵向 collection layout 中按原 index path 应用全局与 App 合并后的隐藏、排序规则。
@@ -379,3 +386,4 @@ RootHide / Dopamine 用户请装对应 scheme 的 deb，装完 respring，并把
 ## 许可证
 
 MIT
+

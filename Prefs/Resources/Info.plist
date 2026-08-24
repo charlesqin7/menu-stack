@@ -15,9 +15,9 @@
 	<key>CFBundlePackageType</key>
 	<string>BNDL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0.52</string>
+	<string>1.0.53</string>
 	<key>CFBundleVersion</key>
-	<string>1.0.52</string>
+	<string>1.0.53</string>
 	<key>NSPrincipalClass</key>
 	<string>VLMRootListController</string>
 	<key>CFBundleIconFile</key>
@@ -29,3 +29,4 @@
 	</array>
 </dict>
 </plist>
+

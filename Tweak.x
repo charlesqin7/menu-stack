@@ -54,6 +54,7 @@ static NSArray<NSDictionary *> *gRegistry;
 static NSDictionary<NSString *, NSDictionary *> *gRegistryByID;
 static NSDictionary *gResolvedEditPolicy;
 static NSDictionary *gResolvedContextPolicy;
+static NSUInteger gPolicyGeneration = 0;
 static const void *kVLMDeferredKindKey = &kVLMDeferredKindKey;
 
 #define VLMLog(fmt, ...) do { \
@@ -98,6 +99,7 @@ static void VLMLoadPrefs(void) {
     NSString *bundleID = VLMCurrentBundleID();
     gResolvedEditPolicy = [VLMResolvedPolicyForKindInPrefs(dict, bundleID, VLMMenuKindEdit) copy];
     gResolvedContextPolicy = [VLMResolvedPolicyForKindInPrefs(dict, bundleID, VLMMenuKindContext) copy];
+    gPolicyGeneration++;
 }
 
 static BOOL VLMLoadPrefsFailClosed(void) {
@@ -564,6 +566,67 @@ static NSDictionary *VLMPolicyWithLegacyAliases(NSDictionary *policy, NSArray *e
     return VLMRulesNormalizedPolicy(result);
 }
 
+// The active 1.0.52 path applies policy to collection-view rows instead of
+// rewriting UIMenu objects. Keep legacy/title IDs compatible in that path as
+// well; otherwise a saved `custom:粘贴` rule can never match the canonical
+// `paste` row discovered from UIKit.
+static NSDictionary *VLMPolicyWithObservedAliases(NSDictionary *policy,
+                                                  NSArray<NSString *> *itemIDs,
+                                                  NSArray<NSString *> *titles) {
+    NSDictionary *normalized = VLMRulesNormalizedPolicy(policy);
+    NSMutableDictionary<NSString *, NSString *> *aliases = [NSMutableDictionary dictionary];
+    NSUInteger count = MIN(itemIDs.count, titles.count);
+    for (NSUInteger index = 0; index < count; index++) {
+        NSString *itemID = [itemIDs[index] isKindOfClass:[NSString class]] ? itemIDs[index] : @"";
+        NSString *title = VLMTrimTitle([titles[index] isKindOfClass:[NSString class]] ? titles[index] : nil);
+        if (itemID.length == 0 || title.length == 0) {
+            continue;
+        }
+        NSString *catalogID = VLMCatalogIDForTitle(title);
+        NSString *canonical = catalogID.length > 0 ? catalogID : itemID;
+        if (![canonical isEqualToString:itemID]) {
+            aliases[itemID] = canonical;
+        }
+        NSString *legacy = [@"custom:" stringByAppendingString:title];
+        if (canonical.length > 0) {
+            aliases[legacy] = canonical;
+        }
+        NSString *folded = VLMRulesFoldedText(title);
+        if (folded.length > 0 && [itemID hasPrefix:@"title:"]) {
+            aliases[[NSString stringWithFormat:@"title:%@:%@", VLMCurrentBundleID(), folded]] = canonical;
+        }
+    }
+    if (aliases.count == 0) {
+        return normalized;
+    }
+
+    NSMutableDictionary *result = [normalized mutableCopy];
+    NSMutableDictionary *visibility = [NSMutableDictionary dictionary];
+    [normalized[@"visibility"] enumerateKeysAndObjectsUsingBlock:^(NSString *rawID, NSString *state, BOOL *stop) {
+        (void)stop;
+        NSString *mapped = aliases[rawID] ?: rawID;
+        // A canonical setting wins over an older alias if both are present.
+        if (!visibility[mapped] || [mapped isEqualToString:rawID]) {
+            visibility[mapped] = state;
+        }
+    }];
+    result[@"visibility"] = visibility;
+    for (NSString *field in @[@"first", @"relative", @"last"]) {
+        NSArray *source = [normalized[field] isKindOfClass:[NSArray class]] ? normalized[field] : @[];
+        NSMutableArray *mappedValues = [NSMutableArray arrayWithCapacity:source.count];
+        NSMutableSet *seen = [NSMutableSet set];
+        for (NSString *rawID in source) {
+            NSString *mapped = aliases[rawID] ?: rawID;
+            if (mapped.length > 0 && ![seen containsObject:mapped]) {
+                [seen addObject:mapped];
+                [mappedValues addObject:mapped];
+            }
+        }
+        result[field] = mappedValues;
+    }
+    return VLMRulesNormalizedPolicy(result);
+}
+
 static UIMenu *VLMRewrittenMenuForKind(UIMenu *menu, NSString *kind);
 
 static NSArray *VLMRewrittenElementsForKind(NSArray *elements, NSString *kind) {
@@ -848,6 +911,8 @@ static const void *kVLMFrameGuardKey = &kVLMFrameGuardKey;
 static const void *kVLMRepairScheduledKey = &kVLMRepairScheduledKey;
 static const void *kVLMEffectMaskViewKey = &kVLMEffectMaskViewKey;
 static const void *kVLMStableFrameXKey = &kVLMStableFrameXKey;
+static const void *kVLMPolicyGenerationKey = &kVLMPolicyGenerationKey;
+static const void *kVLMVisualSurfaceKey = &kVLMVisualSurfaceKey;
 
 static CGRect gKeyboardFrameEnd = {{0, 0}, {0, 0}};
 static BOOL gKeyboardVisible = NO;
@@ -865,6 +930,8 @@ static void VLMRepairEditMenuChrome(UIView *host);
 static CGRect VLMClampFrameInSuperview(UIView *view, CGRect frame);
 static BOOL VLMCollectionViewIsScrolling(UIScrollView *scrollView);
 static NSInteger VLMVisibleItemCount(UICollectionView *collectionView);
+static void VLMApplyVerticalCollectionLayout(id host);
+static void VLMRelayoutVisibleCells(id host);
 
 static UICollectionView *VLMFindCollectionView(id view) {
     if ([view isKindOfClass:[UICollectionView class]]) {
@@ -1870,6 +1937,12 @@ static void VLMRefreshCollectionObservation(id host, UICollectionView *collectio
     BOOL commandsAlignWithCells = commands.count == count;
     NSMutableArray<NSDictionary *> *records = [NSMutableArray array];
     for (NSInteger index = 0; index < count; index++) {
+        if (commandsAlignWithCells) {
+            // A command-aligned snapshot is authoritative; do not retain a
+            // title/ID from a previously reused row at the same index.
+            storedTitles[index] = @"";
+            storedItemIDs[index] = @"";
+        }
         NSIndexPath *path = [NSIndexPath indexPathForItem:index inSection:0];
         UICollectionViewCell *cell = [collectionView cellForItemAtIndexPath:path];
         NSString *title = VLMTitleFromCell(cell);
@@ -1877,6 +1950,17 @@ static void VLMRefreshCollectionObservation(id host, UICollectionView *collectio
         NSString *commandTitle = VLMTitleFromObject(command);
         if (title.length == 0 && commandTitle.length > 0) {
             title = commandTitle;
+        }
+        // Some iOS releases expose the command model and cells in different
+        // orders. If a visible cell has a title, recover its command by title
+        // before falling back to the old index-aligned path.
+        if (!command && title.length > 0) {
+            for (id candidate in commands) {
+                if ([VLMTrimTitle(VLMTitleFromObject(candidate)) isEqualToString:VLMTrimTitle(title)]) {
+                    command = candidate;
+                    break;
+                }
+            }
         }
         if (title.length > 0) {
             storedTitles[index] = title;
@@ -1892,11 +1976,23 @@ static void VLMRefreshCollectionObservation(id host, UICollectionView *collectio
     }
     objc_setAssociatedObject(collectionView, kVLMCapturedTitlesKey, storedTitles, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(collectionView, kVLMCapturedItemIDsKey, storedItemIDs, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    NSArray<NSNumber *> *visibleIndexes = VLMRulesVisibleOriginalIndexes(storedItemIDs, VLMPolicyForKind(VLMMenuKindEdit));
+    NSDictionary *observedPolicy = VLMPolicyWithObservedAliases(VLMPolicyForKind(VLMMenuKindEdit),
+                                                                  storedItemIDs,
+                                                                  storedTitles);
+    NSArray<NSNumber *> *visibleIndexes = VLMRulesVisibleOriginalIndexes(storedItemIDs, observedPolicy);
     NSArray<NSNumber *> *previousVisible = objc_getAssociatedObject(collectionView, kVLMVisibleItemIndexesKey);
     if (![previousVisible isEqualToArray:visibleIndexes]) {
         objc_setAssociatedObject(collectionView, kVLMVisibleItemIndexesKey, visibleIndexes, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [collectionView.collectionViewLayout invalidateLayout];
+    }
+    objc_setAssociatedObject(collectionView, kVLMPolicyGenerationKey, @(gPolicyGeneration), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (gDebug) {
+        for (NSInteger index = 0; index < count; index++) {
+            NSString *rowTitle = VLMTrimTitle(storedTitles[index]);
+            NSString *rowID = storedItemIDs[index];
+            BOOL visible = [visibleIndexes containsObject:@(index)];
+            VLMLog(@"row index=%ld id=%@ title=%@ visible=%d", (long)index, rowID ?: @"", rowTitle, visible);
+        }
     }
     VLMRememberEditMenuFromHost(host, commands, records, NO);
 
@@ -2011,41 +2107,26 @@ static UICollectionViewLayout *VLMEnsureVerticalListLayout(UICollectionView *col
 }
 
 static void VLMExpandCollectionChain(UIView *host, UICollectionView *collectionView) {
-    UIView *current = collectionView;
-    for (NSInteger depth = 0; current && current != host && depth < 8; depth++) {
-        UIView *parent = current.superview;
-        if (!parent) {
-            break;
-        }
-        NSString *name = NSStringFromClass(current.class);
-        BOOL managedByEffectView = [current isKindOfClass:[UIVisualEffectView class]]
-            || [name containsString:@"Backdrop"]
-            || [name containsString:@"Shadow"];
-        if (!managedByEffectView) {
-            CGRect target = (parent == host) ? host.bounds : [parent convertRect:host.bounds fromView:host];
-            if (target.size.width < 8.0 || target.size.height < 8.0) {
-                target = parent.bounds;
-            }
-            if (!VLMFramesClose(current.frame, target)) {
-                VLMDisableConstraints(current);
-                current.frame = target;
-            }
-        }
-        current = parent;
-    }
+    // UIKit owns the private wrapper hierarchy. Converting host.bounds into
+    // every parent and writing it back turns a scroll-view bounds-origin
+    // change into a horizontal frame shift at the top/bottom edge.
+    (void)host;
+    (void)collectionView;
 }
 
 static void VLMMatchCollectionFrame(UIView *host, UICollectionView *collectionView) {
-    UIView *chainParent = collectionView.superview;
-    CGRect targetFrame = host.bounds;
-    if (chainParent && chainParent != host) {
-        targetFrame = [chainParent convertRect:host.bounds fromView:host];
-        if (targetFrame.size.width < 8.0 || targetFrame.size.height < 8.0) {
-            targetFrame = chainParent.bounds;
-        }
+    if (!host || !collectionView || collectionView.superview != host) {
+        return;
     }
-    if (!VLMFramesClose(collectionView.frame, targetFrame)) {
-        collectionView.frame = targetFrame;
+    // Only resize a directly hosted collection; preserve its UIKit-provided
+    // origin. Nested private wrappers must never receive converted frames.
+    CGRect frame = collectionView.frame;
+    CGSize size = host.bounds.size;
+    if (size.width >= 8.0 && size.height >= 8.0
+        && (fabs(frame.size.width - size.width) > 0.5
+            || fabs(frame.size.height - size.height) > 0.5)) {
+        frame.size = size;
+        collectionView.frame = frame;
     }
 }
 
@@ -2107,6 +2188,13 @@ static void VLMApplyVerticalCollectionLayout(id hostObj) {
     if (!collectionView) {
         objc_setAssociatedObject(host, kVLMApplyingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         return;
+    }
+
+    NSNumber *observedGeneration = objc_getAssociatedObject(collectionView, kVLMPolicyGenerationKey);
+    if (![observedGeneration isKindOfClass:[NSNumber class]]
+        || observedGeneration.unsignedIntegerValue != gPolicyGeneration) {
+        objc_setAssociatedObject(host, kVLMSetupDoneKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(collectionView, kVLMVisibleItemIndexesKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
 
     BOOL scrolling = VLMCollectionViewIsScrolling(collectionView);
@@ -2429,6 +2517,52 @@ static UIView *VLMEnclosingEditMenuList(UIView *view) {
     return nil;
 }
 
+static UIView *VLMEnsureVisualSurface(UIView *content) {
+    UIView *surface = objc_getAssociatedObject(content, kVLMVisualSurfaceKey);
+    if (![surface isKindOfClass:[UIView class]]) {
+        surface = [[UIView alloc] init];
+        surface.userInteractionEnabled = NO;
+        surface.isAccessibilityElement = NO;
+        surface.opaque = YES;
+        objc_setAssociatedObject(content, kVLMVisualSurfaceKey, surface, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    if (surface.superview != content) {
+        [content addSubview:surface];
+    }
+    surface.frame = content.bounds;
+    surface.backgroundColor = VLMMenuBackgroundColor();
+    surface.layer.zPosition = 100;
+    [content bringSubviewToFront:surface];
+    return surface;
+}
+
+static BOOL VLMCellShouldRender(UIView *cell) {
+    if (![cell isKindOfClass:[UICollectionViewCell class]]) {
+        return YES;
+    }
+    UICollectionView *collectionView = nil;
+    UIView *current = cell.superview;
+    for (NSInteger depth = 0; current && depth < 8; depth++) {
+        if ([current isKindOfClass:[UICollectionView class]]) {
+            collectionView = (UICollectionView *)current;
+            break;
+        }
+        current = current.superview;
+    }
+    if (!collectionView) {
+        return YES;
+    }
+    NSArray<NSNumber *> *visibleIndexes = objc_getAssociatedObject(collectionView, kVLMVisibleItemIndexesKey);
+    if (![visibleIndexes isKindOfClass:[NSArray class]]) {
+        return YES;
+    }
+    NSIndexPath *path = [collectionView indexPathForCell:(UICollectionViewCell *)cell];
+    if (!path || path.section != 0) {
+        return YES;
+    }
+    return [visibleIndexes containsObject:@(path.item)];
+}
+
 static CGFloat VLMAlignedIconLeft(UIView *cell) {
     (void)cell;
     // Every custom-layout cell starts at x=0 and spans the collection width.
@@ -2616,8 +2750,23 @@ static void VLMRelayoutCell(UIView *cell) {
     cell.backgroundColor = [UIColor clearColor];
     VLMHideLeftoverCover(content, cell);
 
-    UIImageView *slot = VLMEnsureFallbackSlot(content);
-    UILabel *titleSlot = VLMEnsureTitleSlot(content);
+    if (!VLMCellShouldRender(cell)) {
+        cell.hidden = YES;
+        cell.alpha = 0;
+        cell.userInteractionEnabled = NO;
+        objc_setAssociatedObject(cell, kVLMCellGuardKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        return;
+    }
+    cell.hidden = NO;
+    cell.alpha = 1;
+    cell.userInteractionEnabled = YES;
+
+    // The visual surface is the single owner of title/icon pixels. Native
+    // UIKit subviews may be recreated by UIButtonConfiguration after this
+    // hook, but they remain underneath this opaque, non-interactive surface.
+    UIView *surface = VLMEnsureVisualSurface(content);
+    UIImageView *slot = VLMEnsureFallbackSlot(surface);
+    UILabel *titleSlot = VLMEnsureTitleSlot(surface);
     // UIKit may materialize or restore a button's native label after the first
     // cell pass. Enforce concealment before the cached fast path as well, so
     // the native title cannot reappear beside the overlay title.
@@ -2630,8 +2779,8 @@ static void VLMRelayoutCell(UIView *cell) {
         && cachedTitle.length > 0
         && [lastSizeValue isKindOfClass:[NSValue class]]
         && CGSizeEqualToSize(lastSizeValue.CGSizeValue, content.bounds.size)
-        && slot.superview == content
-        && titleSlot.superview == content) {
+        && slot.superview == surface
+        && titleSlot.superview == surface) {
         CGFloat iconLeft = VLMAlignedIconLeft(cell);
         CGFloat textX = iconLeft + kVLMIconSize + kVLMIconTextGap;
         slot.frame = CGRectMake(iconLeft, (content.bounds.size.height - kVLMIconSize) / 2.0, kVLMIconSize, kVLMIconSize);
@@ -2741,8 +2890,8 @@ static void VLMRelayoutCell(UIView *cell) {
     }
 
     if (hasTitle) {
-        if (slot.superview != content) {
-            [content addSubview:slot];
+        if (slot.superview != surface) {
+            [surface addSubview:slot];
         }
         slot.hidden = NO;
         slot.alpha = 1;
@@ -2757,8 +2906,8 @@ static void VLMRelayoutCell(UIView *cell) {
     }
 
     if (hasTitle) {
-        if (titleSlot.superview != content) {
-            [content addSubview:titleSlot];
+        if (titleSlot.superview != surface) {
+            [surface addSubview:titleSlot];
         }
         titleSlot.hidden = NO;
         titleSlot.alpha = 1;
@@ -2771,6 +2920,8 @@ static void VLMRelayoutCell(UIView *cell) {
         titleSlot.text = titleText;
         titleSlot.frame = titleRect;
         titleSlot.layer.zPosition = 20;
+        [surface bringSubviewToFront:titleSlot];
+        [surface bringSubviewToFront:slot];
     } else if (titleSlot.superview) {
         titleSlot.hidden = YES;
         titleSlot.alpha = 0;
@@ -2809,6 +2960,27 @@ static void VLMRelayoutVisibleCells(id host) {
     for (UIView *cell in collectionView.visibleCells) {
         objc_setAssociatedObject(cell, kVLMManagedCellKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         VLMRelayoutCell(cell);
+    }
+}
+
+static void VLMInvalidateVisibleEditMenus(void) {
+    for (UIWindow *window in VLMAllWindows(nil)) {
+        UIView *list = VLMFindEditMenuList(window, 8);
+        if (!list || !list.window) {
+            continue;
+        }
+        UICollectionView *collectionView = VLMCollectionViewInHost(list);
+        if (!collectionView) {
+            continue;
+        }
+        objc_setAssociatedObject(collectionView, kVLMVisibleItemIndexesKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(collectionView, kVLMPolicyGenerationKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(list, kVLMSetupDoneKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [collectionView.collectionViewLayout invalidateLayout];
+        [collectionView setNeedsLayout];
+        [list setNeedsLayout];
+        VLMApplyVerticalCollectionLayout(list);
+        VLMRelayoutVisibleCells(list);
     }
 }
 
@@ -3129,6 +3301,9 @@ static const void *kVLMEditDelegateProxyKey = &kVLMEditDelegateProxyKey;
 - (void)setBounds:(CGRect)bounds {
     if (VLMEditOn() && !objc_getAssociatedObject(self, kVLMFrameGuardKey)) {
         CGSize fitted = VLMVerticalFittingSize(self, bounds.size);
+        if (fabs(bounds.origin.x) > 0.01) {
+            bounds.origin.x = 0;
+        }
         if (fabs(bounds.size.width - fitted.width) > 0.5
             || fabs(bounds.size.height - fitted.height) > 0.5) {
             bounds.size = fitted;
@@ -3186,6 +3361,7 @@ static const void *kVLMEditDelegateProxyKey = &kVLMEditDelegateProxyKey;
         objc_setAssociatedObject(collectionView, kVLMCapturedTitlesKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(collectionView, kVLMCapturedItemIDsKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(collectionView, kVLMVisibleItemIndexesKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(collectionView, kVLMPolicyGenerationKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, kVLMSetupDoneKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, kVLMCollectionKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         objc_setAssociatedObject(self, kVLMViewportSizeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
@@ -3252,6 +3428,13 @@ static const void *kVLMEditDelegateProxyKey = &kVLMEditDelegateProxyKey;
     objc_setAssociatedObject(self, kVLMLastCellSizeKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(self, kVLMLastCellIdentityKey, nil, OBJC_ASSOCIATION_COPY_NONATOMIC);
     objc_setAssociatedObject(self, kVLMCellRetryKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    UIView *surface = objc_getAssociatedObject(content, kVLMVisualSurfaceKey);
+    surface.hidden = NO;
+    surface.alpha = 1;
+    UIImageView *slot = objc_getAssociatedObject(surface, kVLMFallbackIconKey);
+    UILabel *titleSlot = objc_getAssociatedObject(surface, kVLMTitleSlotKey);
+    slot.image = nil;
+    titleSlot.text = nil;
     self.hidden = NO;
     self.alpha = 1;
     self.userInteractionEnabled = YES;
@@ -3414,6 +3597,7 @@ static const void *kVLMEditDelegateProxyKey = &kVLMEditDelegateProxyKey;
 static void VLMPrefsChanged(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
     dispatch_async(dispatch_get_main_queue(), ^{
         VLMLoadPrefsFailClosed();
+        VLMInvalidateVisibleEditMenus();
         VLMLog(@"prefs reload enabled=%d context=%d edit=%d debug=%d registry=%lu", gEnabled, gContextMenus, gEditMenus, gDebug, (unsigned long)gRegistry.count);
     });
 }
@@ -3509,3 +3693,4 @@ static void VLMIncomingPrefsChanged(CFNotificationCenterRef center, void *observ
     VLMLog(@"loaded in %@ enabled=%d context=%d edit=%d debug=%d list=%d registry=%lu",
            bundleID, gEnabled, gContextMenus, gEditMenus, gDebug, hookedList, (unsigned long)gRegistry.count);
 }
+

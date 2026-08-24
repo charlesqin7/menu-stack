@@ -1927,8 +1927,43 @@ NSDictionary *VLMAppPolicyForKindInPrefs(NSDictionary<NSString *, id> *prefs, NS
 }
 
 NSDictionary *VLMResolvedPolicyForKindInPrefs(NSDictionary<NSString *, id> *prefs, NSString *bundleID, NSString *kind) {
-    return VLMRulesResolvedPolicy(VLMGlobalPolicyForKindInPrefs(prefs, kind),
-                                  VLMAppPolicyForKindInPrefs(prefs, bundleID, kind));
+    NSDictionary *rawRoot = [prefs[VLMMenuPoliciesKey] isKindOfClass:[NSDictionary class]] ? prefs[VLMMenuPoliciesKey] : nil;
+    id rawSchema = rawRoot[@"schema"];
+    NSInteger schema = [rawSchema respondsToSelector:@selector(integerValue)] ? [rawSchema integerValue] : 0;
+    if (schema >= 2) {
+        return VLMRulesResolvedPolicy(VLMGlobalPolicyForKindInPrefs(prefs, kind),
+                                      VLMAppPolicyForKindInPrefs(prefs, bundleID, kind));
+    }
+
+    // Preferences and SpringBoard perform the durable V2 migration, but an
+    // already-running target App may load before either process has written
+    // MenuPoliciesV2. Resolve the legacy snapshot in memory so global hidden
+    // items still inherit immediately; the next normal migration persists it.
+    NSDictionary *legacyRules = [prefs[VLMGlobalRulesKey] isKindOfClass:[NSDictionary class]]
+        ? prefs[VLMGlobalRulesKey] : @{};
+    if (![legacyRules[@"migrated"] boolValue]) {
+        legacyRules = VLMRulesMigratedGlobalRules(legacyRules,
+                                                   VLMSanitizeProfiles(prefs[VLMMenuProfilesKey]),
+                                                   VLMSanitizeHiddenIDs(prefs[VLMHiddenItemsKey]),
+                                                   VLMCatalogItems(),
+                                                   VLMDefaultOrderIDs(),
+                                                   VLMMenuKindEdit,
+                                                   VLMMenuKindContext);
+    }
+    NSString *normalizedKind = VLMNormalizedKind(kind);
+    NSDictionary *legacyGlobal = VLMRulesPolicyFromLegacyRule(legacyRules[normalizedKind], NO);
+    NSDictionary *legacyApp = @{ @"orderMode": VLMRulesOrderModeInherit };
+    if (bundleID.length > 0) {
+        for (NSDictionary *profile in VLMSanitizeProfiles(prefs[VLMMenuProfilesKey])) {
+            if (![profile[@"bundle"] isEqualToString:bundleID]
+                || ![VLMNormalizedKind(profile[@"kind"]) isEqualToString:normalizedKind]) {
+                continue;
+            }
+            legacyApp = VLMRulesPolicyFromLegacyRule(profile, YES);
+            break;
+        }
+    }
+    return VLMRulesResolvedPolicy(legacyGlobal, legacyApp);
 }
 
 static void VLMWritePolicy(NSString *bundleID, NSString *kind, NSDictionary *policy) {
@@ -2067,3 +2102,4 @@ void VLMMigrateToPolicyV2IfNeededAsync(void) {
         VLMMigrateToPolicyV2IfNeeded();
     });
 }
+
